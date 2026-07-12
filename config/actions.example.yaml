@@ -1,0 +1,11 @@
+actions:
+  - id: say_hello
+    description: Safe disabled-by-default example command.
+    type: command
+    cwd: .
+    command: node
+    args:
+      - -e
+      - console.log('hello from local automation server')
+    timeoutMs: 10000
+    allowConcurrent: false

@@ -1,0 +1,12 @@
+rules:
+  - id: hello-command
+    enabled: false
+    description: Run the example action when a message contains a hello command.
+    when:
+      source: http.server.local-http
+      kind: http.request
+      match:
+        jsonPath: $.body.command
+        equals: hello
+    then:
+      - action: say_hello

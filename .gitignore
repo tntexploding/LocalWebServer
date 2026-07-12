@@ -1,0 +1,35 @@
+node_modules/
+**/dist/
+*.tsbuildinfo
+
+# Local secrets and environment overrides.
+.env
+.env.*
+!.env.example
+*.local.yaml
+*.local.yml
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*credentials*.json
+*secrets*.json
+
+# Machine-specific runtime configuration and message contracts.
+config/*.yaml
+config/*.yml
+!config/*.example.yaml
+!config/*.example.yml
+config/templates/
+doc/template/
+
+# Runtime state and diagnostic output.
+*.log
+data/
+data/screenshots/
+
+# Local agent metadata.
+.agents/
+.codex/

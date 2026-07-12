@@ -1,0 +1,18 @@
+httpServers:
+  - id: local-http
+    enabled: true
+    host: 127.0.0.1
+    port: 4789
+    path: /ingest
+    description: Local example HTTP listener.
+
+wsServers:
+  - id: control
+    enabled: false
+    host: 127.0.0.1
+    port: 4789
+    path: /ws/control
+    description: Local example WebSocket listener.
+
+httpClients: []
+wsClients: []

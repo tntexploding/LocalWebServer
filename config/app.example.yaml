@@ -1,0 +1,17 @@
+server:
+  host: '127.0.0.1'
+  port: 4789
+  webSocketPath: '/ws'
+
+security:
+  apiToken: 'change-me-before-use'
+  allowedCommandRoots:
+    - '.'
+  allowShell: false
+
+automation:
+  maxConcurrentActions: 2
+
+storage:
+  eventLogPath: 'data/events.jsonl'
+  runLogPath: 'data/runs.jsonl'

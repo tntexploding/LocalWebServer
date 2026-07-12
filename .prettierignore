@@ -1,0 +1,6 @@
+.agents/
+.codex/
+**/dist/
+**/node_modules/
+data/
+package-lock.json

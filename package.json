@@ -1,0 +1,32 @@
+{
+  "name": "local-automation-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run build",
+    "clean": "node scripts/clean.mjs",
+    "dev": "node scripts/dev.mjs",
+    "dev:server": "npm run build -w @las/core && npm run build -w @las/storage && npm run dev -w @las/server",
+    "dev:web": "npm run dev -w @las/web",
+    "build": "tsc -b packages/core packages/storage apps/server && npm run build -w @las/web",
+    "format": "gts fix && prettier --write \"**/*.{css,html,js,json,md,mjs,yaml,yml}\" --ignore-path .prettierignore",
+    "format:check": "prettier --check \"**/*.{css,html,js,json,md,mjs,yaml,yml}\" --ignore-path .prettierignore",
+    "lint": "gts lint",
+    "typecheck": "npm run build -w @las/core && npm run build -w @las/storage && npm run typecheck --workspaces",
+    "start": "npm run build && npm run start -w @las/server",
+    "start:server": "npm run start",
+    "preview:web": "npm run preview -w @las/web"
+  },
+  "devDependencies": {
+    "gts": "^7.0.0",
+    "typescript": "^5.4.5"
+  }
+}
