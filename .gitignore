@@ -1,4 +1,5 @@
 node_modules/
+.npm-cache/
 **/dist/
 *.tsbuildinfo
 
@@ -6,30 +7,55 @@ node_modules/
 .env
 .env.*
 !.env.example
+.npmrc
+!.npmrc.example
 *.local.yaml
 *.local.yml
+*.local.json
+*.secret
+*.token
 *.pem
 *.key
 *.p12
 *.pfx
 *.jks
 *.keystore
+id_rsa*
+id_ed25519*
+.ssh/
+.aws/
+.azure/
+.gcloud/
+*.kdbx
+*.ovpn
+*.mobileprovision
+*.sqlite
+*.sqlite3
+*.db
+*.bak
+*.backup
 *credentials*.json
 *secrets*.json
 
 # Machine-specific runtime configuration and message contracts.
-config/*.yaml
-config/*.yml
+config/**
+!config/README.md
 !config/*.example.yaml
 !config/*.example.yml
-config/templates/
 doc/template/
 
 # Runtime state and diagnostic output.
 *.log
 data/
 data/screenshots/
+release/
+playwright-report/
+test-results/
+tests/.artifacts/
 
 # Local agent metadata.
 .agents/
 .codex/
+
+# Untracked auxiliary programs and private integrations.
+custom/

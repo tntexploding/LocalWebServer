@@ -1,12 +1,26 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN" data-ark-theme="ark" data-ark-depth="complex">
   <head>
     <meta charset="UTF-8" />
+    <link rel="icon" href="data:," />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Local Automation Server</title>
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#080a0b" />
+    <title>LAS / Local Automation Server</title>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <noscript>
+        <header><strong>LAS / Local Automation Server</strong></header>
+        <nav aria-label="Primary navigation">
+          Dashboard / Endpoints / Automation / Actions / Logs
+        </nav>
+        <main>
+          This local WebUI requires JavaScript to display live gateway data.
+        </main>
+        <footer>LOCAL INSTANCE</footer>
+      </noscript>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

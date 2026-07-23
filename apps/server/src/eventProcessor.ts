@@ -8,6 +8,7 @@ import {
 } from '@las/core';
 import type {JsonlStore} from '@las/storage';
 import {ActionQueue, failedRun} from './actionQueue.js';
+import type {WorkflowExecutor} from './workflowExecutor.js';
 
 /** Persists events, evaluates rules, and queues matching actions. */
 export class EventProcessor {
@@ -18,6 +19,13 @@ export class EventProcessor {
     private readonly events: JsonlStore<EventEnvelope>,
     private readonly runs: JsonlStore<ActionResult>,
     private readonly queue: ActionQueue,
+    private readonly workflows: WorkflowExecutor,
+    private readonly sanitizeEvent: (
+      event: EventEnvelope,
+    ) => EventEnvelope = event => event,
+    private readonly sanitizeResult: (
+      result: ActionResult,
+    ) => ActionResult = result => result,
   ) {}
 
   updateConfig(rules: RuleConfig[], actions: ActionConfig[]): void {
@@ -31,12 +39,13 @@ export class EventProcessor {
       return {
         ruleId: rule.id,
         matched: checks.every(check => check.matched),
-        actions: rule.then.map(step => step.action),
+        actions: ruleActionIds(rule),
         checks,
       };
     });
     event.meta = {...event.meta, ruleEvaluations: evaluations};
-    await this.events.append(event);
+    await this.events.append(this.sanitizeEvent(event));
+    this.workflows.acceptEvent(event);
     const results: ActionResult[] = [];
 
     for (const [index, rule] of this.rules.entries()) {
@@ -44,7 +53,12 @@ export class EventProcessor {
         continue;
       }
 
-      for (const step of rule.then) {
+      if (rule.workflow) {
+        results.push(this.workflows.start(rule, event));
+        continue;
+      }
+
+      for (const step of rule.then ?? []) {
         const action = this.actions.get(step.action);
         if (!action) {
           const missing = failedRun(
@@ -53,7 +67,7 @@ export class EventProcessor {
             event.traceId,
             `Action "${step.action}" is not defined.`,
           );
-          await this.runs.append(missing);
+          await this.runs.append(this.sanitizeResult(missing));
           results.push(missing);
           continue;
         }
@@ -64,6 +78,37 @@ export class EventProcessor {
     }
 
     return results;
+  }
+
+  async triggerWorkflow(
+    rule: RuleConfig,
+    event: EventEnvelope,
+  ): Promise<ActionResult> {
+    if (!rule.enabled || !rule.workflow) {
+      throw new Error(`Rule "${rule.id}" is not an enabled workflow.`);
+    }
+    event.meta = {
+      ...event.meta,
+      scheduledRuleId: rule.id,
+      ruleEvaluations: [
+        {
+          ruleId: rule.id,
+          matched: true,
+          actions: ruleActionIds(rule),
+          checks: [
+            {
+              field: 'trigger',
+              matched: true,
+              expected: 'time',
+              actual: 'time',
+            },
+          ],
+        },
+      ],
+    };
+    await this.events.append(this.sanitizeEvent(event));
+    this.workflows.acceptEvent(event);
+    return this.workflows.start(rule, event);
   }
 
   async runAction(
@@ -90,12 +135,23 @@ export class EventProcessor {
       return {
         ruleId: rule.id,
         matched: checks.every(check => check.matched),
-        actions: rule.then.map(step => step.action),
+        actions: ruleActionIds(rule),
         description: rule.description,
         checks,
       };
     });
   }
+}
+
+function ruleActionIds(rule: RuleConfig): string[] {
+  if (!rule.workflow) return (rule.then ?? []).map(step => step.action);
+  return rule.workflow.nodes
+    .filter(node => node.type === 'action')
+    .map(node =>
+      node.type === 'action' && node.action.type === 'reference'
+        ? node.action.actionId
+        : node.id,
+    );
 }
 
 /** Creates a normalized event envelope with generated identifiers. */

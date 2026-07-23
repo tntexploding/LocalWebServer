@@ -4,10 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1 --port 5277",
+    "dev": "node ../../scripts/web-server.mjs dev",
     "build": "tsc -p tsconfig.json && vite build",
+    "test": "node --test test/*.test.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "preview": "vite preview --host 127.0.0.1 --port 5278"
+    "preview": "node ../../scripts/web-server.mjs preview"
   },
   "dependencies": {
     "@las/core": "0.1.0",
@@ -20,6 +21,6 @@
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^6.0.3",
     "typescript": "^5.4.5",
-    "vite": "^8.1.4"
+    "vite": "^8.1.5"
   }
 }

@@ -1,12 +1,114 @@
+version: 1
+
 rules:
-  - id: hello-command
+  - id: hello-workflow
     enabled: false
-    description: Run the example action when a message contains a hello command.
-    when:
-      source: http.server.local-http
-      kind: http.request
-      match:
-        jsonPath: $.body.command
-        equals: hello
-    then:
-      - action: say_hello
+    description: Run a safe example action and branch on its result.
+    workflow:
+      version: '1.0'
+      startNodeId: trigger
+      nodes:
+        - id: trigger
+          type: trigger
+          label: Receive hello
+          position: {x: 40, y: 150}
+          trigger:
+            type: event
+            event:
+              source: http.server.local-http
+              kind: http.request
+              match:
+                all:
+                  - jsonPath: $.body.command
+                    equals: hello
+        - id: run-command
+          type: action
+          label: Run saved command
+          position: {x: 310, y: 90}
+          action:
+            type: reference
+            actionId: say_hello
+            with:
+              receivedCommand: '${{ trigger.body.command }}'
+            onMissing: error
+        - id: check-result
+          type: logic
+          label: Check command result
+          position: {x: 560, y: 90}
+          logic:
+            input: lastResult
+            operator: success
+        - id: done
+          type: end
+          label: Complete
+          position: {x: 820, y: 45}
+          end:
+            status: completed
+        - id: failed
+          type: end
+          label: Failed
+          position: {x: 820, y: 190}
+          end:
+            status: failed
+            message: The example command failed.
+      edges:
+        - id: trigger-command
+          from: trigger
+          to: run-command
+          outcome: always
+        - id: command-check
+          from: run-command
+          to: check-result
+          outcome: success
+        - id: command-failed
+          from: run-command
+          to: failed
+          outcome: failure
+        - id: check-done
+          from: check-result
+          to: done
+          outcome: 'true'
+        - id: check-failed
+          from: check-result
+          to: failed
+          outcome: 'false'
+  - id: daily-status-workflow
+    enabled: false
+    description: Run a reusable action every day using the host local time zone.
+    workflow:
+      version: '1.0'
+      startNodeId: daily-trigger
+      nodes:
+        - id: daily-trigger
+          type: trigger
+          label: Every day at 09:00
+          position: {x: 40, y: 150}
+          trigger:
+            type: time
+            schedule:
+              mode: daily
+              time: '09:00:00'
+              timeZone: Asia/Shanghai
+              misfirePolicy: runOnce
+        - id: notify
+          type: action
+          label: Notify WebUI
+          position: {x: 330, y: 150}
+          action:
+            type: reference
+            actionId: notify_complete
+        - id: done
+          type: end
+          label: Complete
+          position: {x: 650, y: 150}
+          end:
+            status: completed
+      edges:
+        - id: daily-notify
+          from: daily-trigger
+          to: notify
+          outcome: always
+        - id: notify-done
+          from: notify
+          to: done
+          outcome: success

@@ -11,8 +11,10 @@
     "packages/*"
   ],
   "scripts": {
-    "check": "npm run format:check && npm run lint && npm run typecheck && npm run build",
+    "check": "npm run audit:repo && npm run format:check && npm run lint && npm run typecheck && npm run build && npm run test:all",
+    "audit:repo": "node scripts/audit-repository.mjs",
     "clean": "node scripts/clean.mjs",
+    "config:normalize": "node scripts/normalize-config.mjs",
     "dev": "node scripts/dev.mjs",
     "dev:server": "npm run build -w @las/core && npm run build -w @las/storage && npm run dev -w @las/server",
     "dev:web": "npm run dev -w @las/web",
@@ -23,10 +25,25 @@
     "typecheck": "npm run build -w @las/core && npm run build -w @las/storage && npm run typecheck --workspaces",
     "start": "npm run build && npm run start -w @las/server",
     "start:server": "npm run start",
-    "preview:web": "npm run preview -w @las/web"
+    "preview:web": "npm run preview -w @las/web",
+    "package:portable": "npm run build && node scripts/package-portable.mjs",
+    "secrets:init": "node scripts/init-secrets.mjs",
+    "startup:install": "npm run build && powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/install-startup.ps1",
+    "startup:status": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/status-startup.ps1",
+    "startup:uninstall": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/uninstall-startup.ps1",
+    "test": "npm run test:unit && npm run test:e2e",
+    "test:all": "npm run test && npm run test:browser",
+    "test:browser": "npm run build && playwright test",
+    "test:e2e": "npm run build && node --test --test-concurrency=1 tests/e2e/*.test.mjs",
+    "test:unit": "npm run test --workspaces --if-present"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "gts": "^7.0.0",
-    "typescript": "^5.4.5"
+    "typescript": "^5.4.5",
+    "yaml": "^2.4.5"
+  },
+  "overrides": {
+    "tmp": "0.2.7"
   }
 }

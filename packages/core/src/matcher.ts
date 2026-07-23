@@ -4,11 +4,21 @@ import type {
   MatchCondition,
   MatchConfig,
   RuleConfig,
+  WorkflowEventFilter,
+  WorkflowTrigger,
 } from './types.js';
 
 /** One explainable check performed while evaluating a rule. */
 export interface RuleMatchCheck {
-  field: 'enabled' | 'source' | 'kind' | 'equals' | 'contains' | 'regex';
+  field:
+    | 'enabled'
+    | 'trigger'
+    | 'source'
+    | 'kind'
+    | 'template'
+    | 'equals'
+    | 'contains'
+    | 'regex';
   matched: boolean;
   expected?: unknown;
   actual?: unknown;
@@ -38,27 +48,60 @@ export function explainRuleMatch(
   ];
   if (!rule.enabled) return checks;
 
-  if (!rule.when.anySource && rule.when.source) {
+  const workflowStart = workflowTrigger(rule);
+  if (!rule.when && workflowStart?.type === 'time') {
+    checks.push({
+      field: 'trigger',
+      matched: false,
+      expected: 'event',
+      actual: 'time',
+    });
+    return checks;
+  }
+  const when: WorkflowEventFilter | undefined =
+    rule.when ??
+    (workflowStart?.type === 'event' ? workflowStart.event : undefined);
+  if (!when) return checks;
+
+  if (!when.anySource && when.source) {
     checks.push({
       field: 'source',
-      matched: event.source === rule.when.source,
-      expected: rule.when.source,
+      matched: event.source === when.source,
+      expected: when.source,
       actual: event.source,
     });
   }
-  if (rule.when.kind) {
+  if (when.kind) {
     checks.push({
       field: 'kind',
-      matched: event.kind === rule.when.kind,
-      expected: rule.when.kind,
+      matched: event.kind === when.kind,
+      expected: when.kind,
       actual: event.kind,
     });
   }
+  if (when.template) {
+    const actualTemplate = firstJsonPathValue(event, '$.meta.decoded.template');
+    checks.push({
+      field: 'template',
+      matched: actualTemplate === when.template,
+      expected: when.template,
+      actual: actualTemplate,
+      path: '$.meta.decoded.template',
+    });
+  }
 
-  const match = rule.when.match;
+  const match = when.match;
   if (!match) return checks;
   checks.push(...explainMatchConfig(event, match));
   return checks;
+}
+
+function workflowTrigger(rule: RuleConfig): WorkflowTrigger | undefined {
+  if (!rule.workflow) return undefined;
+  const node = rule.workflow.nodes.find(
+    item => item.id === rule.workflow?.startNodeId && item.type === 'trigger',
+  );
+  return node?.type === 'trigger' ? node.trigger : undefined;
 }
 
 /** Returns whether an event satisfies a standalone match configuration. */

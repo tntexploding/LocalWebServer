@@ -4,7 +4,7 @@
 
 - 校验 HTTP 接收端收到的标准 JSON。
 - 从有效 JSON 中提取日志展示字段。
-- 为自动行为提供稳定、可长期引用的匹配字段。
+- 为自动化流程提供稳定、可长期引用的匹配字段。
 - 生成 HTTP 发送动作的最小请求体并应用默认值。
 - 根据字段类型、枚举、范围和输入方式生成图形化表单。
 
@@ -95,7 +95,7 @@
 字段级默认值写在对应 `fields[].defaultValue` 中。发送组包顺序为：
 
 1. 深拷贝 `minimum.body`。
-2. 应用所有可发送字段的 `defaultValue`。
+2. 为声明了 `generatedValue` 的字段生成本次消息值，否则应用 `defaultValue`。
 3. 应用用户填写的字段值。
 4. 当 `pruneEmpty=true` 时，递归删除空字符串、`null`、空对象和空数组。
 5. 检查必需字段和 `constraints`。
@@ -149,13 +149,16 @@
 
 ### 4.2 必需、类型和默认值
 
-| 属性            | 必需 | 说明                                                                    |
-| --------------- | ---- | ----------------------------------------------------------------------- |
-| `required`      | 是   | 发送组包完成后，该路径是否必须存在。是否允许空字符串仍由 Schema 决定。  |
-| `valueType`     | 是   | `string`、`number`、`integer`、`boolean`、`object`、`array` 或 `null`。 |
-| `defaultValue`  | 否   | 用户不填写时自动使用的值，必须符合本字段类型和范围。                    |
-| `constValue`    | 否   | 唯一合法值。                                                            |
-| `allowedValues` | 否   | 全部允许值，用于校验并自动生成下拉框。                                  |
+| 属性             | 必需 | 说明                                                                    |
+| ---------------- | ---- | ----------------------------------------------------------------------- |
+| `required`       | 是   | 发送组包完成后，该路径是否必须存在。是否允许空字符串仍由 Schema 决定。  |
+| `valueType`      | 是   | `string`、`number`、`integer`、`boolean`、`object`、`array` 或 `null`。 |
+| `defaultValue`   | 否   | 用户不填写时自动使用的值，必须符合本字段类型和范围。                    |
+| `generatedValue` | 否   | 每次组包时生成 `uuid` 或 `utc-date-time`；可被用户显式填写值覆盖。      |
+| `constValue`     | 否   | 唯一合法值。                                                            |
+| `allowedValues`  | 否   | 全部允许值，用于校验并自动生成下拉框。                                  |
+
+`generatedValue` 与 `defaultValue`、`constValue` 不能同时存在。`uuid` 只适用于 `valueType=string` 且 `format=uuid` 的字段；`utc-date-time` 只适用于 `valueType=string` 且 `format=date-time` 的字段。每次模板物化只生成一次值，因此一次动作执行中的请求正文保持稳定；发起另一次动作执行时会生成新值。
 
 标识符（QQ 号、群号、雪花 ID、电话号码等）应使用 `string`，不要使用 `integer`，避免前导零丢失或超过 JavaScript 安全整数范围。
 
@@ -183,7 +186,7 @@
 
 - `display`：解码成功后是否出现在端点日志摘要。
 - `send`：是否允许 HTTP 发送动作填写并写入该字段。
-- `match`：是否写入稳定解码值并允许自动行为选择。
+- `match`：是否写入稳定解码值并允许自动化触发器选择。
 
 只读输出字段（如响应状态、服务端时间戳）通常设置为 `send=false`、`match=true`。敏感字段（令牌、密码）原则上不应放入消息模板，而应使用端点请求头或安全配置。
 

@@ -1,33 +1,57 @@
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {existsSync} from 'node:fs';
-import fastify from 'fastify';
+import type {IncomingHttpHeaders} from 'node:http';
+import fastify, {type FastifyRequest} from 'fastify';
 import cors from '@fastify/cors';
 import fastifyStatic from '@fastify/static';
-import {ConfigStore, ensureDataDir, JsonlStore} from '@las/storage';
+import {
+  ConfigStore,
+  ensureDataDir,
+  JsonFileStore,
+  JsonlStore,
+} from '@las/storage';
 import type {RawConfigFiles} from '@las/storage';
 import {
   appConfigSchema,
+  assertValidConfigDependencies,
   type ActionConfig,
   endpointsConfigSchema,
   type ActionResult,
   type AppConfig,
+  type ConfigDocumentName,
   type EndpointsConfig,
   type EventEnvelope,
+  type LoadedConfig,
   type RuleConfig,
+  type SecurityAuditRecord,
 } from '@las/core';
+import {ApiSecurity, type ApiPermission, type ApiRole} from './apiSecurity.js';
 import {ActionExecutor} from './actionExecutor.js';
 import {ActionQueue} from './actionQueue.js';
 import {EndpointListenerManager} from './endpointListenerManager.js';
 import {EndpointTester} from './endpointTester.js';
 import {EventProcessor, makeEvent} from './eventProcessor.js';
+import {EventWaitBroker} from './eventWaitBroker.js';
+import {InteractionBroker} from './interactionBroker.js';
 import {MessageTemplateDecoder} from './messageTemplateDecoder.js';
+import {WorkflowExecutor} from './workflowExecutor.js';
+import {WorkflowScheduler} from './workflowScheduler.js';
 
-const rootDir = path.resolve(
+const codeRoot = path.resolve(
   fileURLToPath(new URL('../../..', import.meta.url)),
 );
-const configStore = new ConfigStore(rootDir);
+const rootDir = path.resolve(process.env.LAS_ROOT_DIR ?? codeRoot);
 const messageTemplates = new MessageTemplateDecoder(rootDir);
+const configStore = new ConfigStore(rootDir, {
+  secretsPath: process.env.LAS_SECRETS_PATH,
+  validate: async candidate => {
+    const templates = await messageTemplates.list();
+    assertValidConfigDependencies(candidate, {
+      templateIds: new Set(templates.map(template => template.name)),
+    });
+  },
+});
 await ensureDataDir(rootDir);
 
 let config = await configStore.load();
@@ -35,15 +59,101 @@ const endpointTester = new EndpointTester(() => config, messageTemplates);
 
 const eventLog = new JsonlStore<EventEnvelope>(
   path.resolve(rootDir, config.app.storage.eventLogPath),
+  {
+    maxBytes: config.app.storage.maxLogBytes,
+    maxFiles: config.app.storage.maxLogFiles,
+  },
 );
 const runLog = new JsonlStore<ActionResult>(
   path.resolve(rootDir, config.app.storage.runLogPath),
+  {
+    maxBytes: config.app.storage.maxLogBytes,
+    maxFiles: config.app.storage.maxLogFiles,
+  },
 );
+const auditLog = new JsonlStore<SecurityAuditRecord>(
+  path.resolve(rootDir, config.app.storage.auditLogPath),
+  {
+    maxBytes: config.app.storage.maxLogBytes,
+    maxFiles: config.app.storage.maxLogFiles,
+  },
+);
+const schedulerState = new JsonFileStore<{
+  version: 1;
+  lastTriggeredAt: Record<string, string>;
+}>(path.resolve(rootDir, config.app.storage.schedulerStatePath));
 
-const app = fastify({logger: true});
-await app.register(cors, {origin: true});
+const app = fastify({
+  logger: {
+    redact: {
+      paths: [
+        'req.headers.authorization',
+        'req.headers.cookie',
+        'req.headers.x-api-key',
+        'req.headers.x-las-token',
+        'request.headers.authorization',
+        'request.headers.cookie',
+        'request.headers.x-api-key',
+        'request.headers.x-las-token',
+      ],
+      censor: '[REDACTED]',
+    },
+  },
+});
+const apiSecurity = new ApiSecurity(
+  () => config.app.security,
+  auditLog,
+  error => app.log.error({error}, 'Security audit record could not be saved.'),
+);
+const pendingAudits = new Map<
+  string,
+  {permission: ApiPermission; role: ApiRole; remoteAddress: string}
+>();
+await app.register(cors, {
+  origin(origin, callback) {
+    callback(null, apiSecurity.isOriginAllowed(origin));
+  },
+});
 
-const webDist = path.join(rootDir, 'apps', 'web', 'dist');
+app.addHook('onRequest', async (request, reply) => {
+  if (!request.url.startsWith('/api/')) return;
+  if (apiSecurity.isSourceAllowed(request.ip)) return;
+  await apiSecurity.audit({
+    requestId: request.id,
+    remoteAddress: request.ip,
+    method: request.method,
+    path: requestPath(request.url),
+    permission: requestPermission(request.method, request.url),
+    outcome: 'denied',
+    statusCode: 403,
+    reason: 'Source address is not allowlisted.',
+  });
+  return reply.code(403).send({error: 'API source is not allowed.'});
+});
+
+app.addHook('preSerialization', async (request, _reply, payload) => {
+  return request.url.startsWith('/api/')
+    ? configStore.redact(payload)
+    : payload;
+});
+
+app.addHook('onResponse', async (request, reply) => {
+  const pending = pendingAudits.get(request.id);
+  if (!pending) return;
+  pendingAudits.delete(request.id);
+  await apiSecurity.audit({
+    requestId: request.id,
+    remoteAddress: pending.remoteAddress,
+    method: request.method,
+    path: requestPath(request.url),
+    permission: pending.permission,
+    outcome: reply.statusCode >= 400 ? 'failed' : 'allowed',
+    role: pending.role,
+    statusCode: reply.statusCode,
+  });
+});
+
+const webDist = path.join(codeRoot, 'apps', 'web', 'dist');
 if (existsSync(webDist)) {
   await app.register(fastifyStatic, {
     root: webDist,
@@ -68,7 +178,7 @@ const endpointListeners: EndpointListenerManager = new EndpointListenerManager(
         method: message.method,
         path: message.path,
         remoteAddress: message.remoteAddress,
-        headers: message.headers,
+        headers: redactSensitiveHeaders(message.headers),
         listener: {
           host: message.endpoint.host,
           port: message.endpoint.port,
@@ -82,34 +192,79 @@ const endpointListeners: EndpointListenerManager = new EndpointListenerManager(
   },
   async message => {
     const event = makeEvent({
-      source: `ws.server.${message.endpoint.id}`,
+      source: `ws.${message.role}.${message.endpoint.id}`,
       kind: 'ws.message',
       traceId: messageTraceId(message.body),
       body: message.body,
       meta: {
         remoteAddress: message.remoteAddress,
-        path: message.endpoint.path,
-        listener: {
-          host: message.endpoint.host,
-          port: message.endpoint.port,
-        },
+        connectionRole: message.role,
+        ...('path' in message.endpoint ? {path: message.endpoint.path} : {}),
+        ...('host' in message.endpoint
+          ? {
+              listener: {
+                host: message.endpoint.host,
+                port: message.endpoint.port,
+              },
+            }
+          : {client: {url: message.endpoint.url}}),
       },
     });
     await processor.receive(event);
   },
+  (error, context) => {
+    app.log.error({error, context}, 'Endpoint listener operation failed.');
+  },
 );
+const interactions = new InteractionBroker();
+const eventWaits = new EventWaitBroker();
 const executor: ActionExecutor = new ActionExecutor(
   config.app,
-  (target, payload) => endpointListeners.send(target, payload),
+  (target, payload, options) =>
+    endpointListeners.send(target, payload, options),
   messageTemplates,
+  interactions,
+  eventWaits,
 );
 const queue: ActionQueue = new ActionQueue(
   config.app.automation.maxConcurrentActions,
   executor,
   runLog,
+  error => app.log.error({error}, 'Action result could not be persisted.'),
+  result => configStore.redact(result),
 );
-const processor: EventProcessor = new EventProcessor(eventLog, runLog, queue);
+const workflowExecutor = new WorkflowExecutor(
+  queue,
+  runLog,
+  eventWaits,
+  () => config,
+  error => app.log.error({error}, 'Workflow result could not be persisted.'),
+  result => configStore.redact(result),
+);
+const processor: EventProcessor = new EventProcessor(
+  eventLog,
+  runLog,
+  queue,
+  workflowExecutor,
+  event => configStore.redact(event),
+  result => configStore.redact(result),
+);
+const workflowScheduler = new WorkflowScheduler(
+  async (rule, event) => {
+    await processor.triggerWorkflow(rule, event);
+  },
+  (error, rule) => {
+    app.log.error({error, ruleId: rule.id}, 'Scheduled workflow failed.');
+  },
+  schedulerState,
+  error => app.log.error({error}, 'Scheduler state could not be persisted.'),
+);
 processor.updateConfig(config.rules, config.actions);
+await workflowScheduler.initialize(config.rules);
+
+app.addHook('onClose', async () => {
+  workflowScheduler.stop();
+});
 
 await applyEndpointServers();
 endpointListeners.listenForControlUpgrades();
@@ -117,47 +272,56 @@ endpointListeners.listenForControlUpgrades();
 app.get('/api/health', async () => ({
   ok: true,
   time: new Date().toISOString(),
-  ws: endpointListeners.wsStatus(),
+  ws: configStore.redact(endpointListeners.wsStatus()),
   listeners: endpointListeners.listenerStatus(),
 }));
 
-app.get('/api/config', async () => config);
+app.get('/api/config', async request => {
+  requirePermission(request, 'read');
+  return publicConfig();
+});
 
-app.get('/api/config/raw', async () => configStore.loadRaw());
+app.get('/api/config/raw', async request => {
+  requirePermission(request, 'admin');
+  return configStore.loadRaw();
+});
 
-app.get('/api/templates', async () => messageTemplates.list());
+app.get('/api/templates', async request => {
+  requirePermission(request, 'read');
+  return messageTemplates.list();
+});
 
 app.put<{Body: EndpointsConfig}>('/api/endpoints', async request => {
-  requireToken(request.headers['x-las-token']);
+  requirePermission(request, 'admin');
   const endpoints = endpointsConfigSchema.parse(request.body);
   await replaceEndpoints(endpoints);
-  return config;
+  return publicConfig();
 });
 
 app.put<{Body: RuleConfig[]}>('/api/rules', async request => {
-  requireToken(request.headers['x-las-token']);
+  requirePermission(request, 'admin');
   if (!Array.isArray(request.body)) {
     throw new Error('Rules payload must be an array.');
   }
   config = await configStore.saveRules(request.body);
-  processor.updateConfig(config.rules, config.actions);
-  return config;
+  updateAutomationConfig(true);
+  return publicConfig();
 });
 
 app.put<{Body: ActionConfig[]}>('/api/actions', async request => {
-  requireToken(request.headers['x-las-token']);
+  requirePermission(request, 'admin');
   if (!Array.isArray(request.body)) {
     throw new Error('Actions payload must be an array.');
   }
   config = await configStore.saveActions(request.body);
-  processor.updateConfig(config.rules, config.actions);
-  return config;
+  updateAutomationConfig(false);
+  return publicConfig();
 });
 
 app.put<{Body: Partial<AppConfig['server']>}>(
   '/api/app/server',
   async request => {
-    requireToken(request.headers['x-las-token']);
+    requirePermission(request, 'admin');
     const appConfig = appConfigSchema.parse({
       ...config.app,
       server: {
@@ -168,7 +332,7 @@ app.put<{Body: Partial<AppConfig['server']>}>(
     config = await configStore.saveApp(appConfig);
     queue.setMaxConcurrent(config.app.automation.maxConcurrentActions);
     return {
-      config,
+      config: publicConfig(),
       restartRequired: true,
     };
   },
@@ -184,7 +348,7 @@ app.post<{
     useTemplate?: boolean;
   };
 }>('/api/endpoints/test', async (request, reply) => {
-  requireToken(request.headers['x-las-token']);
+  requirePermission(request, 'operate');
   const result = await endpointTester.test(request.body.kind, request.body.id, {
     method: request.body.method,
     path: request.body.path,
@@ -197,37 +361,180 @@ app.post<{
 app.put<{Params: {name: keyof RawConfigFiles}; Body: {content: string}}>(
   '/api/config/raw/:name',
   async (request, reply) => {
-    requireToken(request.headers['x-las-token']);
+    requirePermission(request, 'admin');
     const name = request.params.name;
     if (!['app', 'endpoints', 'rules', 'actions'].includes(name)) {
       return reply.code(404).send({error: 'Unknown config file.'});
     }
     if (name === 'endpoints') {
       await replaceRawEndpoints(request.body.content);
-      return config;
+      return publicConfig();
     }
     config = await configStore.saveRaw(name, request.body.content);
-    processor.updateConfig(config.rules, config.actions);
+    updateAutomationConfig(name === 'rules');
     queue.setMaxConcurrent(config.app.automation.maxConcurrentActions);
-    return config;
+    return publicConfig();
   },
 );
 
-app.get<{Querystring: {limit?: string}}>('/api/events', async request => {
-  return eventLog.latest(Number(request.query.limit ?? 100));
+app.get<{Querystring: {name?: ConfigDocumentName}}>(
+  '/api/config/history',
+  async (request, reply) => {
+    requirePermission(request, 'admin');
+    const name = request.query.name;
+    if (name && !isConfigDocumentName(name)) {
+      return reply.code(400).send({error: 'Invalid config document name.'});
+    }
+    return configStore.listHistory(name);
+  },
+);
+
+app.post<{Params: {name: ConfigDocumentName; id: string}}>(
+  '/api/config/history/:name/:id/restore',
+  async (request, reply) => {
+    requirePermission(request, 'admin');
+    if (!isConfigDocumentName(request.params.name)) {
+      return reply.code(404).send({error: 'Unknown config file.'});
+    }
+    const previousEndpoints = config.endpoints;
+    const candidate = await configStore.previewRevision(
+      request.params.name,
+      request.params.id,
+    );
+    if (request.params.name === 'endpoints') {
+      await endpointListeners.apply(candidate.endpoints, candidate.app.server);
+    }
+    try {
+      config = await configStore.restore(
+        request.params.name,
+        request.params.id,
+      );
+    } catch (error) {
+      if (request.params.name === 'endpoints') {
+        await endpointListeners.apply(previousEndpoints, config.app.server);
+      }
+      throw error;
+    }
+    updateAutomationConfig(request.params.name === 'rules');
+    queue.setMaxConcurrent(config.app.automation.maxConcurrentActions);
+    return {
+      config: publicConfig(),
+      restartRequired: request.params.name === 'app',
+    };
+  },
+);
+
+app.get<{
+  Querystring: {
+    limit?: string;
+    source?: string;
+    kind?: EventEnvelope['kind'];
+    traceId?: string;
+  };
+}>('/api/events', async request => {
+  requirePermission(request, 'read');
+  const limit = queryLimit(request.query.limit);
+  const rows = await eventLog.latest(queryScanLimit(limit));
+  return rows
+    .filter(
+      event =>
+        (!request.query.source || event.source === request.query.source) &&
+        (!request.query.kind || event.kind === request.query.kind) &&
+        (!request.query.traceId || event.traceId === request.query.traceId),
+    )
+    .slice(0, limit);
 });
 
-app.get<{Querystring: {limit?: string}}>('/api/runs', async request => {
-  return runLog.latest(Number(request.query.limit ?? 100));
+app.get<{
+  Querystring: {
+    limit?: string;
+    actionId?: string;
+    ruleId?: string;
+    traceId?: string;
+    workflowRunId?: string;
+    status?: ActionResult['status'];
+  };
+}>('/api/runs', async request => {
+  requirePermission(request, 'read');
+  const limit = queryLimit(request.query.limit);
+  const rows = await runLog.latest(queryScanLimit(limit));
+  return rows
+    .filter(
+      run =>
+        (!request.query.actionId || run.actionId === request.query.actionId) &&
+        (!request.query.ruleId || run.ruleId === request.query.ruleId) &&
+        (!request.query.traceId || run.traceId === request.query.traceId) &&
+        (!request.query.workflowRunId ||
+          run.workflowRunId === request.query.workflowRunId ||
+          run.id === request.query.workflowRunId) &&
+        (!request.query.status || run.status === request.query.status),
+    )
+    .slice(0, limit);
 });
 
-app.get('/api/queue', async () => queue.snapshot());
+app.get<{Params: {id: string}; Querystring: {limit?: string}}>(
+  '/api/workflows/:id/runs',
+  async request => {
+    requirePermission(request, 'read');
+    const limit = queryLimit(request.query.limit);
+    const rows = await runLog.latest(queryScanLimit(limit));
+    return rows
+      .filter(
+        run =>
+          run.ruleId === request.params.id && run.detail?.kind === 'workflow',
+      )
+      .slice(0, limit);
+  },
+);
+
+app.get('/api/queue', async request => {
+  requirePermission(request, 'read');
+  const snapshot = queue.snapshot();
+  return {
+    ...snapshot,
+    running: [...workflowExecutor.snapshot(), ...snapshot.running],
+    schedules: workflowScheduler.snapshot(),
+  };
+});
+
+app.get('/api/interactions', async request => {
+  requirePermission(request, 'read');
+  return interactions.list();
+});
+
+app.post<{Params: {id: string}; Body: {value: string}}>(
+  '/api/interactions/:id/respond',
+  async (request, reply) => {
+    requirePermission(request, 'operate');
+    const responded = interactions.respond(
+      request.params.id,
+      request.body.value,
+    );
+    if (!responded) {
+      return reply.code(404).send({error: 'Unknown interaction.'});
+    }
+    return {ok: true};
+  },
+);
+
+app.delete<{Params: {id: string}}>(
+  '/api/interactions/:id',
+  async (request, reply) => {
+    requirePermission(request, 'operate');
+    if (!interactions.dismiss(request.params.id)) {
+      return reply.code(404).send({error: 'Unknown interaction.'});
+    }
+    return {ok: true};
+  },
+);
 
 app.post<{Params: {id: string}}>(
   '/api/queue/:id/cancel',
   async (request, reply) => {
-    requireToken(request.headers['x-las-token']);
-    const result = await queue.cancel(request.params.id);
+    requirePermission(request, 'operate');
+    const result =
+      (await queue.cancel(request.params.id)) ??
+      workflowExecutor.cancel(request.params.id);
     if (!result) {
       return reply.code(404).send({error: 'Unknown run.'});
     }
@@ -238,7 +545,7 @@ app.post<{Params: {id: string}}>(
 app.post<{Params: {id: string}}>(
   '/api/events/:id/replay',
   async (request, reply) => {
-    requireToken(request.headers['x-las-token']);
+    requirePermission(request, 'operate');
     const original = await eventLog.findById(request.params.id);
     if (!original) {
       return reply.code(404).send({error: 'Unknown event.'});
@@ -259,7 +566,7 @@ app.post<{Params: {id: string}}>(
 );
 
 app.post<{Params: {id: string}}>('/api/actions/:id/run', async request => {
-  requireToken(request.headers['x-las-token']);
+  requirePermission(request, 'operate');
   const event = makeEvent({
     source: 'ui.manual',
     kind: 'http.request',
@@ -270,7 +577,7 @@ app.post<{Params: {id: string}}>('/api/actions/:id/run', async request => {
 });
 
 app.post<{Body: Partial<EventEnvelope>}>('/api/rules/test', async request => {
-  requireToken(request.headers['x-las-token']);
+  requirePermission(request, 'operate');
   const event = makeEvent({
     source: request.body.source ?? 'test.event',
     kind: request.body.kind ?? 'http.request',
@@ -286,7 +593,7 @@ app.post<{Body: Partial<EventEnvelope>}>('/api/rules/test', async request => {
 app.post<{Params: {target: string}; Body: unknown}>(
   '/api/ws/:target/send',
   async request => {
-    requireToken(request.headers['x-las-token']);
+    requirePermission(request, 'operate');
     await endpointListeners.send(request.params.target, request.body);
     return {ok: true};
   },
@@ -314,12 +621,36 @@ app.route({
   },
 });
 
-function requireToken(value: string | string[] | undefined): void {
-  const token = Array.isArray(value) ? value[0] : value;
-  if (token !== config.app.security.apiToken) {
-    const error = new Error('Invalid x-las-token.');
-    Object.assign(error, {statusCode: 401});
+function requirePermission(
+  request: FastifyRequest,
+  permission: ApiPermission,
+): void {
+  const authorization = apiSecurity.authorize(
+    request.headers['x-las-token'],
+    permission,
+  );
+  if (!authorization.allowed) {
+    void apiSecurity.audit({
+      requestId: request.id,
+      remoteAddress: request.ip,
+      method: request.method,
+      path: requestPath(request.url),
+      permission,
+      outcome: 'denied',
+      role: authorization.role,
+      statusCode: authorization.statusCode,
+      reason: authorization.reason,
+    });
+    const error = new Error(authorization.reason ?? 'API access denied.');
+    Object.assign(error, {statusCode: authorization.statusCode});
     throw error;
+  }
+  if (permission !== 'read' && authorization.role) {
+    pendingAudits.set(request.id, {
+      permission,
+      role: authorization.role,
+      remoteAddress: request.ip,
+    });
   }
 }
 
@@ -327,9 +658,15 @@ async function applyEndpointServers(): Promise<void> {
   await endpointListeners.apply(config.endpoints, config.app.server);
 }
 
+function updateAutomationConfig(reschedule: boolean): void {
+  processor.updateConfig(config.rules, config.actions);
+  if (reschedule) workflowScheduler.updateConfig(config.rules);
+}
+
 async function replaceEndpoints(endpoints: EndpointsConfig): Promise<void> {
   const previous = config.endpoints;
   try {
+    await configStore.previewEndpoints(endpoints);
     await endpointListeners.apply(endpoints, config.app.server);
     config = await configStore.saveEndpoints(endpoints);
   } catch (error) {
@@ -339,16 +676,47 @@ async function replaceEndpoints(endpoints: EndpointsConfig): Promise<void> {
 }
 
 async function replaceRawEndpoints(content: string): Promise<void> {
-  const previousRaw = (await configStore.loadRaw()).endpoints;
   const previous = config.endpoints;
   try {
+    const candidate = await configStore.previewRaw('endpoints', content);
+    await endpointListeners.apply(candidate.endpoints, config.app.server);
     config = await configStore.saveRaw('endpoints', content);
-    await endpointListeners.apply(config.endpoints, config.app.server);
   } catch (error) {
-    config = await configStore.saveRaw('endpoints', previousRaw);
     await endpointListeners.apply(previous, config.app.server);
     throw error;
   }
+}
+
+function publicConfig(): LoadedConfig {
+  return configStore.redact(config);
+}
+
+function requestPermission(method: string, url: string): ApiPermission {
+  const pathname = requestPath(url);
+  if (pathname.startsWith('/api/config/raw')) return 'admin';
+  if (pathname.startsWith('/api/config/history')) return 'admin';
+  if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') {
+    return 'read';
+  }
+  if (
+    pathname.startsWith('/api/endpoints') ||
+    pathname.startsWith('/api/rules') ||
+    pathname.startsWith('/api/actions') ||
+    pathname.startsWith('/api/app')
+  ) {
+    return pathname.endsWith('/test') || pathname.endsWith('/run')
+      ? 'operate'
+      : 'admin';
+  }
+  return 'operate';
+}
+
+function requestPath(url: string): string {
+  return new URL(url, 'http://localhost').pathname;
+}
+
+function isConfigDocumentName(value: string): value is ConfigDocumentName {
+  return ['app', 'endpoints', 'rules', 'actions'].includes(value);
 }
 
 function requestHeader(
@@ -357,12 +725,68 @@ function requestHeader(
   return Array.isArray(value) ? value[0] : value;
 }
 
+function redactSensitiveHeaders(
+  headers: IncomingHttpHeaders,
+): IncomingHttpHeaders {
+  const sensitiveNames = new Set([
+    'authorization',
+    'cookie',
+    'proxy-authorization',
+    'x-api-key',
+    'x-las-token',
+  ]);
+  return Object.fromEntries(
+    Object.entries(headers).map(([name, value]) => [
+      name,
+      sensitiveNames.has(name.toLowerCase()) ? '[REDACTED]' : value,
+    ]),
+  );
+}
+
 function messageTraceId(body: unknown): string | undefined {
   if (!body || typeof body !== 'object' || !('traceId' in body))
     return undefined;
   const value = (body as {traceId?: unknown}).traceId;
   return typeof value === 'string' ? value : undefined;
 }
+
+function queryLimit(value: string | undefined): number {
+  const parsed = Number(value ?? 100);
+  return Number.isFinite(parsed)
+    ? Math.min(1000, Math.max(1, Math.trunc(parsed)))
+    : 100;
+}
+
+function queryScanLimit(limit: number): number {
+  return Math.min(10000, Math.max(1000, limit * 20));
+}
+
+app.setErrorHandler((error, request, reply) => {
+  const normalized =
+    error instanceof Error ? error : new Error('Unknown request failure.');
+  const errorDetail = normalized as Error & {
+    statusCode?: number;
+    issues?: unknown;
+  };
+  const explicitStatus = errorDetail.statusCode;
+  const statusCode =
+    explicitStatus ??
+    (['ConfigDependencyError', 'ZodError', 'YAMLParseError'].includes(
+      normalized.name,
+    )
+      ? 400
+      : 500);
+  if (statusCode >= 500) {
+    request.log.error({error}, 'Request failed.');
+  }
+  const issues = Array.isArray(errorDetail.issues)
+    ? configStore.redact(errorDetail.issues)
+    : undefined;
+  return reply.code(statusCode).send({
+    error: configStore.redact(normalized.message),
+    ...(issues ? {issues} : {}),
+  });
+});
 
 await app.listen({
   host: config.app.server.host,

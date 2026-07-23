@@ -6,10 +6,17 @@ Local Automation Server 是一个本地 HTTP/WebSocket 网关与自动化服务�
 
 - 为不同 IP、端口和路径创建 HTTP/WS 服务端。
 - 通过完整 URL 创建 HTTP/WS 客户端。
-- 使用 YAML 管理端点、自动行为、动作和运行设置。
+- 使用 YAML 管理端点、自动化流程、动作和运行设置。
 - 使用 JSON 消息模板校验接收内容、提取字段和生成发送表单。
-- 按来源、事件类型、JSONPath、等值、包含或正则条件触发动作链。
-- 记录事件、执行历史与队列状态，并通过中文/英文 WebUI 管理。
+- 通过起点、动作、逻辑分支和结束点搭建可视化自动化流程。
+- 按来源、消息模板、事件类型和一个或多个 JSONPath 条件触发流程。
+- 在流程中执行命令或脚本、发送 HTTP/WS、等待消息、通知用户或等待选择。
+- 使用 `${{ ... }}` 将触发消息、节点结果和流程输入传递给后续动作。
+- 为 HTTP/WS 发送提供超时、指数退避重试、幂等键和持久 WS 客户端。
+- 持久化调度状态，支持 IANA 时区与服务重启后的错过执行策略。
+- 记录可轮转事件日志、节点级执行时间线与队列状态，并通过中文/英文 WebUI 管理。
+- 原子保存配置，保存前校验跨文件引用，并提供带完整性摘要的本机历史恢复。
+- 将管理、操作和只读令牌与普通配置分离，限制控制 API 来源和浏览器来源。
 - 限制命令工作目录、Shell 使用方式和动作并发数。
 
 ## 环境要求
@@ -23,9 +30,11 @@ Local Automation Server 是一个本地 HTTP/WebSocket 网关与自动化服务�
 ```powershell
 npm install
 Copy-Item config/app.example.yaml config/app.yaml
+Copy-Item config/web.example.yaml config/web.yaml
 Copy-Item config/endpoints.example.yaml config/endpoints.yaml
 Copy-Item config/rules.example.yaml config/rules.yaml
 Copy-Item config/actions.example.yaml config/actions.yaml
+npm run secrets:init
 npm run dev
 ```
 
@@ -33,10 +42,14 @@ npm run dev
 
 开发模式会同时启动后端和前端：
 
-- WebUI：`http://127.0.0.1:5277`
+- WebUI：`http://127.0.0.1:5277/ui/`
 - 后端 API：`http://127.0.0.1:4789`
 
+启动器会读取 `config/app.yaml` 中的实际后端地址和 `config/web.yaml` 中的开发 WebUI 地址，检查端口占用，等待后端健康检查通过，再启动 Vite。按 `Ctrl+C` 或任一子服务异常退出时，前后端进程会一并关闭。
+
 如需分别排查，可使用 `npm run dev:server` 和 `npm run dev:web`。
+
+如果页面显示接口诊断，请先看失败类型：`network` 表示后端地址不可达，`HTTP 401/403` 表示后端已在线但 API 令牌缺失、失效或权限不足。管理员令牌保存在被 Git 忽略的 `config/secrets.yaml` 中。
 
 生产式本地运行会先构建全部工作区，再由后端托管 WebUI：
 
@@ -50,42 +63,55 @@ npm start
 
 1. 在“端点”页面创建 HTTP/WS 服务端或客户端。
 2. 为 HTTP 端点选择消息模板，或直接使用原始 JSON。
-3. 在“自动行为”页面定义消息来源、匹配条件和动作顺序。
-4. 在“定时任务/动作”页面配置并测试可执行动作。
+3. 在“动作”页面配置并测试可复用的命令、脚本、发送、交互或等待动作。
+4. 在“自动化”页面选择消息或时间触发器，并连接动作、判断分支和结束点。
 5. 在“日志”页面查看接收、发送、匹配和执行结果。
 
-默认写操作令牌位于 `config/app.yaml`。调用写 API 时使用请求头：
+`npm run secrets:init` 会生成忽略版本控制的 `config/secrets.yaml`，并让普通配置只保留
+`${secret:...}` 引用。调用控制 API 时使用相应角色的请求头：
 
 ```http
-x-las-token: <your-local-token>
+x-las-token: <your-local-admin-operator-or-read-token>
 ```
 
-请在真实环境中立即替换默认令牌。
+管理令牌可保存和恢复配置；操作令牌可试运行、发送、重放和取消；只读令牌只能查询。
+脱敏示例默认要求只读令牌。WebUI 只在当前浏览器会话中保存输入的令牌，关闭会话后不会继续保留。
 
 ## 配置文件
 
 | 文件                      | 用途                                                  |
 | ------------------------- | ----------------------------------------------------- |
 | `config/app.yaml`         | 本机 API 监听、安全边界、并发和日志路径，不进入 Git。 |
+| `config/web.yaml`         | 开发 WebUI 的监听地址与端口，不进入 Git。             |
 | `config/endpoints.yaml`   | 本机 HTTP/WS 服务端与客户端，不进入 Git。             |
-| `config/rules.yaml`       | 本机事件匹配条件和动作链，不进入 Git。                |
-| `config/actions.yaml`     | 本机命令、HTTP 和 WS 动作，不进入 Git。               |
+| `config/rules.yaml`       | 本机消息/时间触发器和自动化流程，不进入 Git。         |
+| `config/actions.yaml`     | 本机可复用动作库，不进入 Git。                        |
 | `config/templates/*.json` | 本机消息协议与字段定义，不进入 Git。                  |
-| `config/*.example.yaml`   | 可以提交的脱敏初始化示例。                            |
+| `config/secrets.yaml`     | 本机令牌与密钥，不进入 Git。                          |
+| `config/*.example.yaml`   | 可以提交的脱敏且默认禁用初始化示例。                  |
 
-实际配置不会在格式化或清理命令中被重置。详细说明见 [配置指南](doc/configuration.md) 和 [消息模板标准](doc/message_template_standard.md)。
+实际配置不会在格式化或清理命令中被重置。详细说明见
+[配置指南](doc/configuration.md)、[自动化流程](doc/workflow_automation.md) 和
+[消息模板标准](doc/message_template_standard.md)。
 
 ## 常用命令
 
-| 命令                | 作用                                    |
-| ------------------- | --------------------------------------- |
-| `npm run dev`       | 同时启动后端和 Vite WebUI。             |
-| `npm start`         | 构建并启动后端托管版本。                |
-| `npm run check`     | 检查格式、风格、类型并执行生产构建。    |
-| `npm run format`    | 使用 GTS 与 Prettier 格式化源码和文档。 |
-| `npm run lint`      | 执行 Google TypeScript 风格检查。       |
-| `npm run typecheck` | 检查所有 npm 工作区的 TypeScript 类型。 |
-| `npm run clean`     | 删除构建产物、增量缓存和开发日志。      |
+| 命令                        | 作用                                            |
+| --------------------------- | ----------------------------------------------- |
+| `npm run dev`               | 同时启动后端和 Vite WebUI。                     |
+| `npm start`                 | 构建并启动后端托管版本。                        |
+| `npm run secrets:init`      | 生成或迁移本机令牌到独立密钥文件。              |
+| `npm run config:normalize`  | 从脱敏模板补齐旧版 `app.yaml` 的缺失字段。      |
+| `npm run check`             | 检查格式、风格、类型、构建并运行全部测试。      |
+| `npm run audit:repo`        | 检查误跟踪配置、凭据模式和运行时硬编码地址。    |
+| `npm run test:unit`         | 运行包级单元和组件测试。                        |
+| `npm run test:e2e`          | 通过构建入口和公共协议运行独立进程测试。        |
+| `npm run test:browser`      | 使用 Chrome 验证生产 WebUI 交互。               |
+| `npm run package:portable`  | 生成不含本机配置、模板和密钥的 Windows 便携包。 |
+| `npm run startup:install`   | 为当前 Windows 用户安装登录启动任务。           |
+| `npm run startup:status`    | 查询登录启动任务状态。                          |
+| `npm run startup:uninstall` | 删除登录启动任务。                              |
+| `npm run clean`             | 删除构建产物、增量缓存和开发日志。              |
 
 ## 工程结构
 
@@ -97,6 +123,7 @@ packages/storage/  YAML 配置与 JSONL 日志存储
 config/            本机运行配置与消息模板
 doc/               架构、配置、开发和通信协议文档
 scripts/           跨平台开发启动与清理脚本
+tests/             仅通过构建入口和公开协议运行的独立验收测试
 ```
 
 更多信息：
@@ -104,9 +131,11 @@ scripts/           跨平台开发启动与清理脚本
 - [架构说明](doc/architecture.md)
 - [HTTP API](doc/api.md)
 - [开发指南](doc/development.md)
+- [自动化流程](doc/workflow_automation.md)
 - [HTTP 通信规范](doc/http_communication_spec.md)
 - [安全说明](SECURITY.md)
+- [部署说明](doc/deployment.md)
 
 ## 项目状态
 
-项目仍处于本地优先的开发阶段。HTTP/WS 收发、消息模板、规则匹配、动作队列和 WebUI 已经连通；更敏感的桌面控制能力尚未作为默认功能开放。
+项目仍处于本地优先的开发阶段。HTTP/WS 收发、持久 WS 客户端、消息模板、消息与可靠时间触发器、参数化可视化工作流、可复用动作库、执行队列、节点时间线和 WebUI 已经连通；任意鼠标控制、进程截图等更敏感的桌面控制能力尚未作为默认功能开放。

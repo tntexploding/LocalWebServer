@@ -1,3 +1,5 @@
+version: 1
+
 actions:
   - id: say_hello
     description: Safe disabled-by-default example command.
@@ -9,3 +11,43 @@ actions:
       - console.log('hello from local automation server')
     timeoutMs: 10000
     allowConcurrent: false
+  - id: notify_complete
+    description: Show a non-blocking message in the local WebUI.
+    type: notification
+    title: Automation complete
+    message: The scheduled example workflow finished.
+  - id: confirm_continue
+    description: Pause a workflow until the local WebUI receives a choice.
+    type: prompt
+    title: Continue workflow
+    message: Choose whether the workflow should continue.
+    options: [continue, stop]
+    timeoutMs: 300000
+  - id: wait_for_reply
+    description: Wait for a matching message from the example HTTP endpoint.
+    type: wait_event
+    source: http.server.local-http
+    kind: http.request
+    match:
+      jsonPath: $.body.type
+      equals: reply
+    timeoutMs: 300000
+  - id: send_dynamic_reply
+    description: Send workflow inputs to a local HTTP receiver with retries.
+    type: send_http
+    method: POST
+    url: http://127.0.0.1:7800/reply
+    headers:
+      x-client: local-automation-server
+    body:
+      message: '${{ inputs.message }}'
+      source: '${{ trigger.source }}'
+      previousOutput: '${{ nodes.prepare.result.output ?? null }}'
+    expressionPolicy: error
+    timeoutMs: 5000
+    retry:
+      maxAttempts: 3
+      initialDelayMs: 500
+      backoffMultiplier: 2
+      maxDelayMs: 5000
+    idempotencyKey: '${{ workflow.runId }}'

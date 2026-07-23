@@ -1,6 +1,8 @@
+version: 1
+
 httpServers:
   - id: local-http
-    enabled: true
+    enabled: false
     host: 127.0.0.1
     port: 4789
     path: /ingest
@@ -15,4 +17,14 @@ wsServers:
     description: Local example WebSocket listener.
 
 httpClients: []
-wsClients: []
+wsClients:
+  - id: local-ws-client
+    enabled: false
+    url: ws://127.0.0.1:8765/ws
+    description: Persistent outbound WebSocket connection example.
+    reconnect:
+      enabled: true
+      initialDelayMs: 1000
+      maxDelayMs: 30000
+      backoffMultiplier: 2
+    heartbeatIntervalMs: 30000

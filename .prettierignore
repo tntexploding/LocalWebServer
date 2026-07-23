@@ -1,6 +1,17 @@
 .agents/
 .codex/
+.npm-cache/
+custom/
+config/**
+!config/README.md
+!config/*.example.yaml
+!config/*.example.yml
+doc/template/
 **/dist/
 **/node_modules/
 data/
+release/
+playwright-report/
+test-results/
+tests/.artifacts/
 package-lock.json

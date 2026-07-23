@@ -1,4 +1,5 @@
 import {readFile, readdir} from 'node:fs/promises';
+import {randomUUID} from 'node:crypto';
 import path from 'node:path';
 import {isIP} from 'node:net';
 import {Ajv2020, type ErrorObject} from 'ajv/dist/2020.js';
@@ -53,7 +54,14 @@ export class MessageTemplateDecoder {
   }
 
   async list(): Promise<MessageTemplateSummary[]> {
-    const names = (await readdir(this.templatesDir))
+    let entries: string[];
+    try {
+      entries = await readdir(this.templatesDir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw error;
+    }
+    const names = entries
       .filter(name => name.endsWith('.json'))
       .sort((a, b) => a.localeCompare(b));
     return Promise.all(
@@ -155,7 +163,13 @@ export class MessageTemplateDecoder {
       : allSendFields;
     const fieldsByPath = new Map(sendFields.map(field => [field.path, field]));
     for (const field of sendFields) {
-      if (field.defaultValue !== undefined) {
+      if (field.generatedValue !== undefined) {
+        setSimpleJsonPathValue(
+          body,
+          field.path,
+          generateTemplateValue(field.generatedValue),
+        );
+      } else if (field.defaultValue !== undefined) {
         setSimpleJsonPathValue(body, field.path, field.defaultValue);
       }
     }
@@ -244,6 +258,13 @@ export class MessageTemplateDecoder {
       );
     }
   }
+}
+
+function generateTemplateValue(
+  generator: NonNullable<MessageTemplateField['generatedValue']>,
+): string {
+  if (generator === 'uuid') return randomUUID();
+  return new Date().toISOString();
 }
 
 function createTemplateAjv(): Ajv2020 {

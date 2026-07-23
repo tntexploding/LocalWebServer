@@ -1,5 +1,10 @@
 import {randomUUID} from 'node:crypto';
-import type {ActionConfig, ActionResult, EventEnvelope} from '@las/core';
+import type {
+  ActionConfig,
+  ActionResult,
+  EventEnvelope,
+  WorkflowExpressionContext,
+} from '@las/core';
 import type {JsonlStore} from '@las/storage';
 import type {ActionExecutor} from './actionExecutor.js';
 
@@ -7,6 +12,7 @@ interface QueueItem {
   run: ActionResult;
   action: ActionConfig;
   event: EventEnvelope;
+  context?: WorkflowExpressionContext;
 }
 
 type RunningItem = QueueItem & {
@@ -18,11 +24,17 @@ export class ActionQueue {
   private readonly queued: QueueItem[] = [];
   private readonly running = new Map<string, RunningItem>();
   private readonly recent = new Map<string, ActionResult>();
+  private readonly waiters = new Map<string, (result: ActionResult) => void>();
 
   constructor(
     private maxConcurrent: number,
     private readonly executor: ActionExecutor,
     private readonly runLog: JsonlStore<ActionResult>,
+    private readonly onPersistenceError: (error: unknown) => void = () =>
+      undefined,
+    private readonly sanitizeResult: (
+      result: ActionResult,
+    ) => ActionResult = result => result,
   ) {}
 
   setMaxConcurrent(value: number): void {
@@ -34,8 +46,49 @@ export class ActionQueue {
     action: ActionConfig;
     event: EventEnvelope;
     ruleId?: string;
+    workflowRunId?: string;
+    workflowNodeId?: string;
+    context?: WorkflowExpressionContext;
   }): ActionResult {
-    const run: ActionResult = {
+    const run = this.queue(input);
+    void this.drain();
+    return run;
+  }
+
+  async enqueueAndWait(input: {
+    action: ActionConfig;
+    event: EventEnvelope;
+    ruleId?: string;
+    workflowRunId?: string;
+    workflowNodeId?: string;
+    context?: WorkflowExpressionContext;
+    onQueued?: (run: ActionResult) => void;
+    signal?: AbortSignal;
+  }): Promise<ActionResult> {
+    input.signal?.throwIfAborted();
+    const run = this.queue(input);
+    input.onQueued?.(run);
+    return new Promise(resolve => {
+      const abort = () => void this.cancel(run.id);
+      this.waiters.set(run.id, result => {
+        input.signal?.removeEventListener('abort', abort);
+        resolve(result);
+      });
+      input.signal?.addEventListener('abort', abort, {once: true});
+      if (input.signal?.aborted) abort();
+      void this.drain();
+    });
+  }
+
+  private queue(input: {
+    action: ActionConfig;
+    event: EventEnvelope;
+    ruleId?: string;
+    workflowRunId?: string;
+    workflowNodeId?: string;
+    context?: WorkflowExpressionContext;
+  }): ActionResult {
+    const run = this.sanitizeResult({
       id: randomUUID(),
       traceId: input.event.traceId,
       actionId: input.action.id,
@@ -43,12 +96,18 @@ export class ActionQueue {
       target: actionTarget(input.action),
       eventId: input.event.id,
       ruleId: input.ruleId,
+      workflowRunId: input.workflowRunId,
+      workflowNodeId: input.workflowNodeId,
       status: 'queued',
       queuedAt: new Date().toISOString(),
-    };
-    this.queued.push({run, action: input.action, event: input.event});
+    });
+    this.queued.push({
+      run,
+      action: input.action,
+      event: input.event,
+      context: input.context,
+    });
     this.recent.set(run.id, run);
-    void this.drain();
     return run;
   }
 
@@ -61,9 +120,11 @@ export class ActionQueue {
         ok: false,
         error: 'Cancelled before execution.',
       });
-      this.recent.set(runId, cancelled);
-      await this.runLog.append(cancelled);
-      return cancelled;
+      const visible = this.sanitizeResult(cancelled);
+      this.recent.set(runId, visible);
+      await this.persistRun(cancelled);
+      this.resolveWaiter(cancelled);
+      return visible;
     }
 
     const running = this.running.get(runId);
@@ -116,24 +177,55 @@ export class ActionQueue {
   }
 
   private async execute(item: RunningItem): Promise<void> {
-    const result = await this.executor.execute(
-      item.action,
-      item.event,
-      item.controller.signal,
-    );
+    let result: ActionResult;
+    try {
+      result = await this.executor.execute(
+        item.action,
+        item.event,
+        item.controller.signal,
+        item.context,
+      );
+    } catch (error) {
+      result = {
+        ...item.run,
+        status: item.controller.signal.aborted ? 'cancelled' : 'failed',
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
     const finished = finalizeRun(item.run, {
       ...result,
       id: item.run.id,
       actionId: item.run.actionId,
       eventId: item.run.eventId,
       ruleId: item.run.ruleId,
+      workflowRunId: item.run.workflowRunId,
+      workflowNodeId: item.run.workflowNodeId,
       queuedAt: item.run.queuedAt,
       startedAt: item.run.startedAt ?? result.startedAt,
     });
     this.running.delete(item.run.id);
-    this.recent.set(item.run.id, finished);
-    await this.runLog.append(finished);
+    this.recent.set(item.run.id, this.sanitizeResult(finished));
+    await this.persistRun(finished);
+    this.resolveWaiter(finished);
     await this.drain();
+  }
+
+  private async persistRun(result: ActionResult): Promise<void> {
+    try {
+      await this.runLog.append(this.sanitizeResult(result));
+    } catch (error) {
+      try {
+        this.onPersistenceError(error);
+      } catch {
+        // A diagnostic callback must not stop queue progress.
+      }
+    }
+  }
+
+  private resolveWaiter(result: ActionResult): void {
+    this.waiters.get(result.id)?.(result);
+    this.waiters.delete(result.id);
   }
 }
 
@@ -163,7 +255,9 @@ export function failedRun(
 function actionTarget(action: ActionConfig): string {
   if (action.type === 'send_http') return action.url;
   if (action.type === 'send_ws') return action.target;
-  return action.cwd;
+  if (action.type === 'command' || action.type === 'script') return action.cwd;
+  if (action.type === 'wait_event') return action.source ?? '*';
+  return action.title;
 }
 
 function finalizeRun(

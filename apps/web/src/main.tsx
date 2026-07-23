@@ -2,11 +2,14 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import {
   Activity,
+  Bell,
   Bug,
   CircleDot,
-  GitBranch,
+  Code2,
+  History,
   LayoutList,
   ListChecks,
+  MessageSquare,
   Network,
   Pause,
   Play,
@@ -18,31 +21,48 @@ import {
   Search,
   ScrollText,
   Settings2,
+  ShieldCheck,
   SlidersHorizontal,
   Terminal,
   TestTube2,
   Trash2,
+  X,
   XCircle,
 } from 'lucide-react';
 import type {
   ActionConfig,
   ActionResult,
+  ConfigRevision,
   EventEnvelope,
   LoadedConfig,
-  MatchCondition as CoreMatchCondition,
+  MatchConfig,
   MessageTemplateField as CoreMessageTemplateField,
+  UserInteraction,
+  WorkflowRunDetail,
 } from '@las/core';
 import {translate, type Locale} from './i18n';
+import {EndpointSplitLayout} from './EndpointSplitLayout';
+import {LocaleContext, ResizablePanel} from './ResizablePanel';
+import {ActionSplitLayout} from './ActionSplitLayout';
+import {WorkflowWorkspace} from './WorkflowWorkspace';
 import './styles.css';
 
 type AppConfig = LoadedConfig;
 type AppAction = ActionConfig;
-type MatchCondition = CoreMatchCondition;
-
 interface Health {
   ok: boolean;
   time: string;
-  ws: Array<{target: string; clients: number}>;
+  ws: Array<{
+    target: string;
+    role: 'server' | 'client';
+    clients: number;
+    state: string;
+    url?: string;
+    reconnectAttempt?: number;
+    lastConnectedAt?: string;
+    lastMessageAt?: string;
+    error?: string;
+  }>;
   listeners?: Array<{
     host: string;
     port: number;
@@ -79,6 +99,13 @@ interface QueueSnapshot {
   queued: RunRow[];
   running: RunRow[];
   recent: RunRow[];
+  schedules: Array<{
+    ruleId: string;
+    mode: 'once' | 'interval' | 'daily';
+    nextRunAt: string;
+    lastRunAt?: string;
+    timeZone?: string;
+  }>;
 }
 
 interface RuleTestResult {
@@ -89,7 +116,14 @@ interface RuleTestResult {
     actions: string[];
     description?: string;
     checks: Array<{
-      field: 'enabled' | 'source' | 'kind' | 'equals' | 'contains' | 'regex';
+      field:
+        | 'enabled'
+        | 'source'
+        | 'kind'
+        | 'template'
+        | 'equals'
+        | 'contains'
+        | 'regex';
       matched: boolean;
       expected?: unknown;
       actual?: unknown;
@@ -97,31 +131,16 @@ interface RuleTestResult {
     }>;
   }>;
 }
-interface RuleDraft {
-  index: number;
-  id: string;
-  enabled: boolean;
-  description: string;
-  anySource: boolean;
-  source: string;
-  kind: string;
-  operator: 'none' | 'equals' | 'contains' | 'regex';
-  jsonPath: string;
-  matchValue: string;
-  template: string;
-  templateConditions: TemplateConditionDraft[];
-  actions: string[];
-}
-interface TemplateConditionDraft {
-  id: string;
-  label: string;
-  path: string;
-  operator: 'equals' | 'contains' | 'regex';
-  value: string;
-}
-type RuleInspectorMode = 'config' | 'test';
-type RuleStatusFilter = 'all' | 'enabled' | 'disabled';
 type ActionKind = AppAction['type'];
+const actionKinds: ActionKind[] = [
+  'command',
+  'script',
+  'send_http',
+  'send_ws',
+  'notification',
+  'prompt',
+  'wait_event',
+];
 type OverviewRange = '1h' | '1d' | '7d' | 'all';
 interface ActionDraft {
   index: number;
@@ -130,6 +149,8 @@ interface ActionDraft {
   description: string;
   cwd: string;
   command: string;
+  interpreter: string;
+  script: string;
   argsText: string;
   timeoutMs: string;
   allowConcurrent: boolean;
@@ -140,6 +161,19 @@ interface ActionDraft {
   template: string;
   templateValues: Record<string, string>;
   target: string;
+  title: string;
+  message: string;
+  optionsText: string;
+  anySource: boolean;
+  source: string;
+  eventKind: EventEnvelope['kind'] | '';
+  matchText: string;
+  expressionPolicy: 'error' | 'empty' | 'preserve';
+  retryMaxAttempts: string;
+  retryInitialDelayMs: string;
+  retryBackoffMultiplier: string;
+  retryMaxDelayMs: string;
+  idempotencyKey: string;
 }
 type ActionInspectorMode = 'config' | 'trial';
 type ActionTypeFilter = 'all' | ActionKind;
@@ -164,6 +198,11 @@ interface EndpointDraft {
   templateFields: string[];
   templateValues: Record<string, string>;
   headersText: string;
+  reconnectEnabled: boolean;
+  reconnectInitialDelayMs: string;
+  reconnectMaxDelayMs: string;
+  reconnectBackoffMultiplier: string;
+  heartbeatIntervalMs: string;
 }
 interface EndpointDisplay {
   kind: EndpointKind;
@@ -234,7 +273,7 @@ interface EndpointLogEntry {
   endpointId: string;
   color: string;
   level: 'ok' | 'failed' | 'info';
-  type: 'test' | 'event' | 'info';
+  type: 'test' | 'event';
   message: string;
   detail?: string;
   decoded?: DecodedMessage;
@@ -245,7 +284,7 @@ type EndpointProtocolFilter = 'all' | 'http' | 'ws';
 type EndpointRoleFilter = 'all' | 'server' | 'client';
 type ActionViewMode = 'graph' | 'config';
 type LogViewMode = 'entries' | 'console';
-type ApiFailureKind = 'network' | 'http' | 'parse' | 'unknown';
+type ApiFailureKind = 'network' | 'auth' | 'http' | 'parse' | 'unknown';
 interface ApiFailure {
   id: string;
   label: string;
@@ -258,19 +297,33 @@ type ApiResult<T> =
   | {ok: true; id: string; value: T}
   | {ok: false; id: string; failure: ApiFailure};
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? defaultApiBase();
+const API_BASE = resolveApiBase();
 const AUTO_REFRESH_INTERVAL_MS = 5000;
 
-function defaultApiBase(): string {
-  const saved = localStorage.getItem('las-api-base');
-  if (saved) {
-    return saved;
+function resolveApiBase(): string {
+  const configured = import.meta.env.VITE_API_BASE?.trim();
+  if (configured) return configured.replace(/\/+$/u, '');
+  return ['http:', 'https:'].includes(window.location.protocol)
+    ? window.location.origin
+    : '';
+}
+
+function apiAuthority(): string {
+  try {
+    return new URL(API_BASE).host;
+  } catch {
+    return window.location.host || '-';
   }
-  const {protocol, port, origin} = window.location;
-  if (port === '5277' || port === '5278' || protocol === 'file:') {
-    return 'http://127.0.0.1:4789';
-  }
-  return origin;
+}
+
+function initialApiToken(): string {
+  const sessionToken = sessionStorage.getItem('las-token');
+  if (sessionToken) return sessionToken;
+  const legacyToken = localStorage.getItem('las-token');
+  if (!legacyToken) return '';
+  localStorage.removeItem('las-token');
+  sessionStorage.setItem('las-token', legacyToken);
+  return legacyToken;
 }
 
 const nav = [
@@ -285,10 +338,13 @@ async function fetchJson<T>(
   id: string,
   label: string,
   path: string,
+  token?: string,
 ): Promise<ApiResult<T>> {
   const url = `${API_BASE}${path}`;
   try {
-    const response = await fetch(url);
+    const response = await fetch(url, {
+      headers: token ? {'x-las-token': token} : undefined,
+    });
     if (!response.ok) {
       return {
         ok: false,
@@ -297,7 +353,10 @@ async function fetchJson<T>(
           id,
           label,
           url,
-          kind: 'http',
+          kind:
+            response.status === 401 || response.status === 403
+              ? 'auth'
+              : 'http',
           status: response.status,
           reason: `${response.status} ${response.statusText}`,
         },
@@ -338,6 +397,12 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function formatBytes(value: number): string {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
+}
+
 function App() {
   const savedLocale = localStorage.getItem('las-locale') as Locale | null;
   const [locale, setLocale] = React.useState<Locale>(savedLocale ?? 'zh-CN');
@@ -345,40 +410,68 @@ function App() {
     (key, values) => translate(locale, key, values),
     [locale],
   );
+  React.useEffect(() => {
+    document.documentElement.lang = locale;
+    document.documentElement.dataset.arkTheme = 'ark';
+    document.documentElement.dataset.arkDepth = 'complex';
+  }, [locale]);
   const [active, setActive] =
     React.useState<(typeof nav)[number]['id']>('dashboard');
-  const [token, setToken] = React.useState(
-    localStorage.getItem('las-token') ?? '',
-  );
+  const [token, setToken] = React.useState(initialApiToken);
   const [config, setConfig] = React.useState<AppConfig | null>(null);
   const [raw, setRaw] = React.useState<RawConfig | null>(null);
   const [health, setHealth] = React.useState<Health | null>(null);
   const [events, setEvents] = React.useState<EventRow[]>([]);
   const [runs, setRuns] = React.useState<RunRow[]>([]);
   const [queue, setQueue] = React.useState<QueueSnapshot | null>(null);
+  const [interactions, setInteractions] = React.useState<UserInteraction[]>([]);
   const [templates, setTemplates] = React.useState<MessageTemplateSummary[]>(
     [],
   );
   const [apiFailures, setApiFailures] = React.useState<ApiFailure[]>([]);
+  const [historyOpen, setHistoryOpen] = React.useState(false);
+  const [configHistory, setConfigHistory] = React.useState<ConfigRevision[]>(
+    [],
+  );
   const [status, setStatus] = React.useState(t('status.ready'));
 
   const refresh = React.useCallback(async () => {
+    const rawRequest = token.trim()
+      ? fetchJson<RawConfig>(
+          'raw',
+          'GET /api/config/raw',
+          '/api/config/raw',
+          token,
+        )
+      : Promise.resolve<ApiResult<RawConfig | null>>({
+          ok: true,
+          id: 'raw',
+          value: null,
+        });
     const results = await Promise.all([
-      fetchJson<Health>('health', 'GET /api/health', '/api/health'),
-      fetchJson<AppConfig>('config', 'GET /api/config', '/api/config'),
-      fetchJson<RawConfig>('raw', 'GET /api/config/raw', '/api/config/raw'),
+      fetchJson<Health>('health', 'GET /api/health', '/api/health', token),
+      fetchJson<AppConfig>('config', 'GET /api/config', '/api/config', token),
+      rawRequest,
       fetchJson<MessageTemplateSummary[]>(
         'templates',
         'GET /api/templates',
         '/api/templates',
+        token,
       ),
       fetchJson<EventRow[]>(
         'events',
         'GET /api/events',
         '/api/events?limit=80',
+        token,
       ),
-      fetchJson<RunRow[]>('runs', 'GET /api/runs', '/api/runs?limit=80'),
-      fetchJson<QueueSnapshot>('queue', 'GET /api/queue', '/api/queue'),
+      fetchJson<RunRow[]>('runs', 'GET /api/runs', '/api/runs?limit=80', token),
+      fetchJson<QueueSnapshot>('queue', 'GET /api/queue', '/api/queue', token),
+      fetchJson<UserInteraction[]>(
+        'interactions',
+        'GET /api/interactions',
+        '/api/interactions',
+        token,
+      ),
     ]);
 
     const failures = results
@@ -394,22 +487,28 @@ function App() {
       }
       if (result.id === 'health') setHealth(result.value as Health);
       if (result.id === 'config') setConfig(result.value as AppConfig);
-      if (result.id === 'raw') setRaw(result.value as RawConfig);
+      if (result.id === 'raw' && result.value !== null) {
+        setRaw(result.value as RawConfig);
+      }
       if (result.id === 'templates')
         setTemplates(result.value as MessageTemplateSummary[]);
       if (result.id === 'events') setEvents(result.value as EventRow[]);
       if (result.id === 'runs') setRuns(result.value as RunRow[]);
       if (result.id === 'queue') setQueue(result.value as QueueSnapshot);
+      if (result.id === 'interactions')
+        setInteractions(result.value as UserInteraction[]);
     }
 
     if (failures.length === 0) {
       setStatus(t('status.updated'));
     } else if (failures.some(failure => failure.id === 'health')) {
       setStatus(t('status.backendOffline'));
+    } else if (failures.some(failure => failure.kind === 'auth')) {
+      setStatus(t('status.authorizationRequired'));
     } else {
       setStatus(t('status.partialFailure'));
     }
-  }, [t]);
+  }, [t, token]);
   const refreshRef = React.useRef(refresh);
 
   React.useEffect(() => {
@@ -444,7 +543,32 @@ function App() {
 
   function saveToken(next: string) {
     setToken(next);
-    localStorage.setItem('las-token', next);
+    if (next) sessionStorage.setItem('las-token', next);
+    else sessionStorage.removeItem('las-token');
+  }
+
+  async function openConfigHistory() {
+    const response = await fetch(`${API_BASE}/api/config/history`, {
+      headers: {'x-las-token': token},
+    });
+    if (!response.ok) throw new Error(await response.text());
+    setConfigHistory((await response.json()) as ConfigRevision[]);
+    setHistoryOpen(true);
+  }
+
+  async function restoreConfigRevision(revision: ConfigRevision) {
+    if (!window.confirm(t('config.historyConfirm', {name: revision.name}))) {
+      return;
+    }
+    const response = await fetch(
+      `${API_BASE}/api/config/history/${revision.name}/${encodeURIComponent(revision.id)}/restore`,
+      {method: 'POST', headers: {'x-las-token': token}},
+    );
+    if (!response.ok) throw new Error(await response.text());
+    setStatus(t('config.historyRestored', {name: revision.name}));
+    setHistoryOpen(false);
+    await refresh();
+    queueFollowupRefresh();
   }
 
   async function saveConfig(name: keyof RawConfig, content: string) {
@@ -578,158 +702,420 @@ function App() {
     return response.json();
   }
 
+  async function respondToInteraction(id: string, value: string) {
+    const response = await fetch(
+      `${API_BASE}/api/interactions/${encodeURIComponent(id)}/respond`,
+      {
+        method: 'POST',
+        headers: {'content-type': 'application/json', 'x-las-token': token},
+        body: JSON.stringify({value}),
+      },
+    );
+    if (!response.ok) throw new Error(await response.text());
+    await refresh();
+    queueFollowupRefresh();
+  }
+
+  async function dismissInteraction(id: string) {
+    const response = await fetch(
+      `${API_BASE}/api/interactions/${encodeURIComponent(id)}`,
+      {method: 'DELETE', headers: {'x-las-token': token}},
+    );
+    if (!response.ok) throw new Error(await response.text());
+    await refresh();
+    queueFollowupRefresh();
+  }
+
   const activeNav = nav.find(item => item.id === active);
+  const activeIndex = Math.max(
+    0,
+    nav.findIndex(item => item.id === active),
+  );
+  const activeSectionCode = `${String(activeIndex + 1).padStart(2, '0')} / ${String(nav.length).padStart(2, '0')}`;
 
   return (
-    <div className="shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="mark">LAS</div>
+    <LocaleContext.Provider value={locale}>
+      <div
+        className="shell"
+        data-page={active}
+        data-connection={health?.ok ? 'online' : 'offline'}
+      >
+        <aside className="sidebar">
+          <div className="brand">
+            <div className="mark" aria-hidden="true">
+              <span>LAS</span>
+            </div>
+            <div>
+              <strong>{t('app.name')}</strong>
+              <span className="brandEndpoint">API / {apiAuthority()}</span>
+            </div>
+          </div>
+          <nav>
+            {nav.map((item, index) => {
+              const Icon = item.icon;
+              const label = t(item.labelKey);
+              return (
+                <button
+                  key={item.id}
+                  className={active === item.id ? 'active' : ''}
+                  onClick={() => setActive(item.id)}
+                  title={label}
+                  aria-current={active === item.id ? 'page' : undefined}
+                >
+                  <small>{String(index + 1).padStart(2, '0')}</small>
+                  <Icon size={18} />
+                  <span className="navLabel">
+                    <strong>{label}</strong>
+                    <em>{item.id}</em>
+                  </span>
+                </button>
+              );
+            })}
+          </nav>
+          <div
+            className="sidebarFoot"
+            data-state={health?.ok ? 'online' : 'offline'}
+          >
+            <CircleDot size={14} />
+            <span>
+              <small>CORE LINK</small>
+              <strong>
+                {health?.ok
+                  ? t('status.backendOnline')
+                  : t('status.backendOffline')}
+              </strong>
+            </span>
+          </div>
+        </aside>
+
+        <main
+          className="appStage"
+          data-section={activeNav?.id.toUpperCase() ?? ''}
+          data-section-index={activeSectionCode}
+        >
+          <div className="stageInstrumentation" aria-hidden="true">
+            <span className="stageAxis" />
+            <span className="stageSector" />
+            <span className="stageIndex">{activeSectionCode}</span>
+          </div>
+          <header className="topbar">
+            <div className="pageIdentity">
+              <div className="pageIdentityMeta">
+                <span>{t('app.console')}</span>
+                <code>{activeSectionCode}</code>
+              </div>
+              <h1>{activeNav ? t(activeNav.labelKey) : ''}</h1>
+              <p aria-live="polite">{status}</p>
+            </div>
+            <div className="topControls">
+              <button
+                className="configHistoryButton"
+                title={t('config.historyHelp')}
+                onClick={() =>
+                  void openConfigHistory().catch(error =>
+                    setStatus(errorMessage(error)),
+                  )
+                }
+              >
+                <History size={17} />
+                <span>{t('config.history')}</span>
+              </button>
+              <div className="languageSwitch">
+                <button
+                  className={locale === 'zh-CN' ? 'active' : ''}
+                  onClick={() => saveLocale('zh-CN')}
+                >
+                  {t('lang.zh')}
+                </button>
+                <button
+                  className={locale === 'en-US' ? 'active' : ''}
+                  onClick={() => saveLocale('en-US')}
+                >
+                  {t('lang.en')}
+                </button>
+              </div>
+              <div className="tokenBox" title={t('field.apiTokenHelp')}>
+                <ShieldCheck size={17} />
+                <label>
+                  <span>{t('field.apiToken')}</span>
+                  <input
+                    type="password"
+                    value={token}
+                    onChange={event => saveToken(event.target.value)}
+                    placeholder={t('field.apiTokenPlaceholder')}
+                    aria-label={t('field.apiToken')}
+                    autoComplete="off"
+                  />
+                </label>
+                <button
+                  onClick={() => void refresh()}
+                  title={t('common.refresh')}
+                >
+                  <RefreshCw size={18} />
+                </button>
+              </div>
+            </div>
+          </header>
+
+          {apiFailures.length > 0 && (
+            <DiagnosticsBanner
+              failures={apiFailures}
+              t={t}
+              onRetry={() => void refresh()}
+            />
+          )}
+
+          {active === 'dashboard' && (
+            <Dashboard
+              config={config}
+              health={health}
+              events={events}
+              runs={runs}
+              queue={queue}
+              t={t}
+            />
+          )}
+          {active === 'endpoints' && config && (
+            <EndpointsPanel
+              config={config}
+              raw={raw?.endpoints ?? ''}
+              events={events}
+              templates={templates}
+              t={t}
+              onSaveEndpoints={(endpoints, id) =>
+                saveEndpointSetup(endpoints, id)
+              }
+              onTestEndpoint={(kind, id, options) =>
+                testEndpoint(kind, id, options)
+              }
+              onSave={content => saveConfig('endpoints', content)}
+            />
+          )}
+          {active === 'rules' && config && (
+            <WorkflowWorkspace
+              raw={raw?.rules ?? ''}
+              rules={config.rules}
+              actions={config.actions}
+              endpoints={config.endpoints}
+              templates={templates}
+              runs={runs}
+              activeRuns={[...(queue?.running ?? []), ...(queue?.queued ?? [])]}
+              t={t}
+              onSaveRules={(rules, id) => saveRuleSetup(rules, id)}
+              onSaveRaw={content => saveConfig('rules', content)}
+              onTest={eventText => testRules(eventText)}
+            />
+          )}
+          {active === 'actions' && config && (
+            <ActionsPanel
+              raw={raw?.actions ?? ''}
+              actions={config.actions}
+              endpoints={config.endpoints}
+              templates={templates}
+              queue={queue}
+              runs={runs}
+              t={t}
+              onSaveActions={(actions, id) => saveActionSetup(actions, id)}
+              onSave={content => saveConfig('actions', content)}
+              onRun={id => runAction(id)}
+              onCancel={id =>
+                cancelRun(id).catch(error => setStatus(error.message))
+              }
+            />
+          )}
+          {active === 'logs' && (
+            <Logs
+              events={events}
+              runs={runs}
+              t={t}
+              onRefresh={() => void refresh()}
+              onReplay={id =>
+                replayEvent(id).catch(error => setStatus(error.message))
+              }
+            />
+          )}
+        </main>
+      </div>
+      <InteractionCenter
+        interactions={interactions}
+        t={t}
+        onRespond={(id, value) =>
+          respondToInteraction(id, value).catch(error =>
+            setStatus(errorMessage(error)),
+          )
+        }
+        onDismiss={id =>
+          dismissInteraction(id).catch(error => setStatus(errorMessage(error)))
+        }
+      />
+      {historyOpen && (
+        <ConfigHistoryDialog
+          revisions={configHistory}
+          t={t}
+          onClose={() => setHistoryOpen(false)}
+          onRestore={revision =>
+            void restoreConfigRevision(revision).catch(error =>
+              setStatus(errorMessage(error)),
+            )
+          }
+        />
+      )}
+    </LocaleContext.Provider>
+  );
+}
+
+function ConfigHistoryDialog({
+  revisions,
+  t,
+  onClose,
+  onRestore,
+}: {
+  revisions: ConfigRevision[];
+  t: Translator;
+  onClose: () => void;
+  onRestore: (revision: ConfigRevision) => void;
+}) {
+  return (
+    <div className="interactionBackdrop" role="presentation">
+      <section
+        className="configHistoryDialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="config-history-title"
+      >
+        <header>
           <div>
-            <strong>{t('app.name')}</strong>
-            <span>127.0.0.1:{health ? new URL(API_BASE).port : '4789'}</span>
+            <span>{t('config.historyDescription')}</span>
+            <strong id="config-history-title">{t('config.history')}</strong>
           </div>
-        </div>
-        <nav>
-          {nav.map(item => {
-            const Icon = item.icon;
-            const label = t(item.labelKey);
-            return (
-              <button
-                key={item.id}
-                className={active === item.id ? 'active' : ''}
-                onClick={() => setActive(item.id)}
-                title={label}
-              >
-                <Icon size={18} />
-                <span>{label}</span>
-              </button>
-            );
-          })}
-        </nav>
-        <div className="sidebarFoot">
-          <CircleDot size={14} />
-          <span>
-            {health?.ok
-              ? t('status.backendOnline')
-              : t('status.backendOffline')}
-          </span>
-        </div>
-      </aside>
-
-      <main>
-        <header className="topbar">
-          <div className="pageIdentity">
-            <span>{t('app.console')}</span>
-            <h1>{activeNav ? t(activeNav.labelKey) : ''}</h1>
-            <p>{status}</p>
-          </div>
-          <div className="topControls">
-            <div className="languageSwitch">
-              <button
-                className={locale === 'zh-CN' ? 'active' : ''}
-                onClick={() => saveLocale('zh-CN')}
-              >
-                {t('lang.zh')}
-              </button>
-              <button
-                className={locale === 'en-US' ? 'active' : ''}
-                onClick={() => saveLocale('en-US')}
-              >
-                {t('lang.en')}
-              </button>
-            </div>
-            <div className="tokenBox">
-              <input
-                value={token}
-                onChange={event => saveToken(event.target.value)}
-                aria-label={t('field.apiToken')}
-              />
-              <button
-                onClick={() => void refresh()}
-                title={t('common.refresh')}
-              >
-                <RefreshCw size={18} />
-              </button>
-            </div>
-          </div>
+          <button title={t('common.close')} onClick={onClose}>
+            <X size={17} />
+          </button>
         </header>
-
-        {apiFailures.length > 0 && (
-          <DiagnosticsBanner
-            failures={apiFailures}
-            t={t}
-            onRetry={() => void refresh()}
-          />
-        )}
-
-        {active === 'dashboard' && (
-          <Dashboard
-            config={config}
-            health={health}
-            events={events}
-            runs={runs}
-            queue={queue}
-            t={t}
-          />
-        )}
-        {active === 'endpoints' && raw && config && (
-          <EndpointsPanel
-            config={config}
-            raw={raw.endpoints}
-            events={events}
-            templates={templates}
-            t={t}
-            onSaveEndpoints={(endpoints, id) =>
-              saveEndpointSetup(endpoints, id)
-            }
-            onTestEndpoint={(kind, id, options) =>
-              testEndpoint(kind, id, options)
-            }
-            onSave={content => saveConfig('endpoints', content)}
-          />
-        )}
-        {active === 'rules' && raw && config && (
-          <RulesPanel
-            raw={raw.rules}
-            rules={config.rules}
-            actions={config.actions}
-            templates={templates}
-            t={t}
-            onSaveRules={(rules, id) => saveRuleSetup(rules, id)}
-            onSave={content => saveConfig('rules', content)}
-            onTest={eventText => testRules(eventText)}
-          />
-        )}
-        {active === 'actions' && raw && config && (
-          <ActionsPanel
-            raw={raw.actions}
-            actions={config.actions}
-            templates={templates}
-            queue={queue}
-            runs={runs}
-            t={t}
-            onSaveActions={(actions, id) => saveActionSetup(actions, id)}
-            onSave={content => saveConfig('actions', content)}
-            onRun={id => runAction(id)}
-            onCancel={id =>
-              cancelRun(id).catch(error => setStatus(error.message))
-            }
-          />
-        )}
-        {active === 'logs' && (
-          <Logs
-            events={events}
-            runs={runs}
-            t={t}
-            onRefresh={() => void refresh()}
-            onReplay={id =>
-              replayEvent(id).catch(error => setStatus(error.message))
-            }
-          />
-        )}
-      </main>
+        <div className="configHistoryList">
+          {revisions.length === 0 ? (
+            <p className="emptyState">{t('config.historyEmpty')}</p>
+          ) : (
+            revisions.map(revision => (
+              <article key={`${revision.name}-${revision.id}`}>
+                <div>
+                  <strong>{revision.name}.yaml</strong>
+                  <span>
+                    {new Date(revision.createdAt).toLocaleString()} ·{' '}
+                    {t(`config.historyReason.${revision.reason}`)} ·{' '}
+                    {formatBytes(revision.size)}
+                  </span>
+                  <code>{revision.sha256.slice(0, 16)}</code>
+                </div>
+                <button
+                  className="secondaryButton"
+                  onClick={() => onRestore(revision)}
+                >
+                  <RotateCcw size={15} />
+                  {t('config.restore')}
+                </button>
+              </article>
+            ))
+          )}
+        </div>
+      </section>
     </div>
+  );
+}
+
+function InteractionCenter({
+  interactions,
+  t,
+  onRespond,
+  onDismiss,
+}: {
+  interactions: UserInteraction[];
+  t: Translator;
+  onRespond: (id: string, value: string) => void;
+  onDismiss: (id: string) => void;
+}) {
+  const prompt = interactions.find(item => item.type === 'prompt');
+  const notifications = interactions.filter(
+    item => item.type === 'notification',
+  );
+  const announcedNotifications = React.useRef(new Set<string>());
+  React.useEffect(() => {
+    if (!('Notification' in window) || Notification.permission !== 'granted')
+      return;
+    for (const item of notifications) {
+      if (announcedNotifications.current.has(item.id)) continue;
+      announcedNotifications.current.add(item.id);
+      new Notification(item.title, {body: item.message, tag: item.id});
+    }
+  }, [notifications]);
+  return (
+    <>
+      {notifications.length > 0 && (
+        <aside className="interactionNotifications" aria-live="polite">
+          {notifications.map(item => (
+            <article key={item.id}>
+              <Bell size={17} />
+              <div>
+                <strong>{item.title}</strong>
+                <p>{item.message}</p>
+                <time>{new Date(item.createdAt).toLocaleTimeString()}</time>
+              </div>
+              <button
+                title={t('interaction.dismiss')}
+                onClick={() => onDismiss(item.id)}
+              >
+                <X size={15} />
+              </button>
+            </article>
+          ))}
+        </aside>
+      )}
+      {prompt && (
+        <div className="interactionBackdrop" role="presentation">
+          <section
+            className="interactionPrompt"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={`interaction-title-${prompt.id}`}
+          >
+            <header>
+              <MessageSquare size={18} />
+              <div>
+                <span>{t('interaction.choiceRequired')}</span>
+                <strong id={`interaction-title-${prompt.id}`}>
+                  {prompt.title}
+                </strong>
+              </div>
+              <button
+                title={t('interaction.dismiss')}
+                onClick={() => onDismiss(prompt.id)}
+              >
+                <X size={16} />
+              </button>
+            </header>
+            <p>{prompt.message}</p>
+            {prompt.expiresAt && (
+              <small>
+                {t('interaction.expiresAt', {
+                  time: new Date(prompt.expiresAt).toLocaleTimeString(),
+                })}
+              </small>
+            )}
+            <footer>
+              {prompt.options.map(option => (
+                <button
+                  className="primaryButton"
+                  key={option}
+                  onClick={() => onRespond(prompt.id, option)}
+                >
+                  {option}
+                </button>
+              ))}
+            </footer>
+          </section>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -749,15 +1135,39 @@ function Dashboard({
   t: Translator;
 }) {
   const [range, setRange] = React.useState<OverviewRange>('1h');
-  const endpointCount = config
+  const endpointStates = config
     ? [
-        ...config.endpoints.httpServers,
-        ...config.endpoints.wsServers,
-        ...config.endpoints.httpClients,
-        ...config.endpoints.wsClients,
-      ].filter(endpoint => endpoint.enabled).length
-    : 0;
-  const activeJobs = (queue?.running.length ?? 0) + (queue?.queued.length ?? 0);
+        ...config.endpoints.httpServers.map(endpoint => ({
+          id: endpoint.id,
+          enabled: endpoint.enabled,
+          type: t('endpoint.httpServer'),
+          target: `http://${formatUrlHost(endpoint.host ?? config.app.server.host)}:${endpoint.port ?? config.app.server.port}${endpoint.path}`,
+        })),
+        ...config.endpoints.wsServers.map(endpoint => ({
+          id: endpoint.id,
+          enabled: endpoint.enabled,
+          type: t('endpoint.wsServer'),
+          target: `ws://${formatUrlHost(endpoint.host ?? config.app.server.host)}:${endpoint.port ?? config.app.server.port}${endpoint.path}`,
+        })),
+        ...config.endpoints.httpClients.map(endpoint => ({
+          id: endpoint.id,
+          enabled: endpoint.enabled,
+          type: t('endpoint.httpClient'),
+          target: endpoint.baseUrl,
+        })),
+        ...config.endpoints.wsClients.map(endpoint => ({
+          id: endpoint.id,
+          enabled: endpoint.enabled,
+          type: t('endpoint.wsClient'),
+          target: endpoint.url,
+        })),
+      ]
+    : [];
+  const endpointCount = endpointStates.filter(
+    endpoint => endpoint.enabled,
+  ).length;
+  const activeAutomations =
+    config?.rules.filter(rule => rule.enabled).length ?? 0;
   const periodEvents = filterByOverviewRange(
     events,
     range,
@@ -783,42 +1193,76 @@ function Dashboard({
   ).length;
   const automationActions = periodRuns.length;
   const completedRules = countCompletedRuleExecutions(periodRuns);
+  const settledRuns = periodRuns.filter(run =>
+    ['completed', 'failed', 'cancelled'].includes(run.status),
+  );
+  const successfulRuns = settledRuns.filter(
+    run => run.status === 'completed' && run.ok !== false,
+  ).length;
+  const successRate = settledRuns.length
+    ? Math.round((successfulRuns / settledRuns.length) * 100)
+    : 100;
+  const failedRuns = periodRuns
+    .filter(run => run.status === 'failed' || run.ok === false)
+    .slice(0, 6);
   const upcomingActions = [
     ...(queue?.queued ?? []),
     ...(queue?.running ?? []),
   ].slice(0, 8);
+  const scheduledAutomations = (queue?.schedules ?? []).slice(0, 8);
+  const trafficBuckets = buildTrafficBuckets(periodEvents, periodRuns, range);
+  const peakTraffic = Math.max(
+    1,
+    ...trafficBuckets.map(bucket => bucket.received + bucket.sent),
+  );
+  const latestActivity = latestActivityTime(events, runs);
 
   return (
     <section className="overviewPage">
       <div className="overviewTop">
-        <section className="projectIntro">
+        <ResizablePanel
+          storageKey="overview-identity"
+          className="projectIntro"
+          resetLabel={t('common.resetPanelSize')}
+        >
           <div className="projectLogoPlaceholder">LAS</div>
-          <div>
+          <div className="overviewIdentity">
             <span>{t('overview.projectCategory')}</span>
             <h2>{t('overview.projectName')}</h2>
             <p>{t('overview.projectDescription')}</p>
-            <div className="developmentProgress">
-              <div>
-                <span>{t('overview.developmentProgress')}</span>
-                <strong>{t('overview.phase')}</strong>
-              </div>
-              <div className="progressTrack">
-                <i />
-              </div>
-            </div>
-          </div>
-        </section>
-        <section className="serviceOverview">
-          <div className="overviewSectionHead">
-            <div>
-              <span>{t('overview.serviceOverview')}</span>
-              <strong>
+            <div className="statusRibbon">
+              <span className={health?.ok ? 'online' : 'offline'}>
+                <CircleDot size={13} />
                 {health?.ok
                   ? t('status.backendOnline')
                   : t('status.backendOffline')}
-              </strong>
+              </span>
+              <span>
+                <RefreshCw size={13} />
+                {t('overview.autoRefresh')}
+              </span>
+              <span>
+                <Activity size={13} />
+                {latestActivity
+                  ? t('overview.lastActivityAt', {
+                      time: new Date(latestActivity).toLocaleTimeString(),
+                    })
+                  : t('overview.noActivity')}
+              </span>
             </div>
-            <CircleDot size={18} />
+          </div>
+        </ResizablePanel>
+        <ResizablePanel
+          storageKey="overview-service"
+          className="serviceOverview"
+          resetLabel={t('common.resetPanelSize')}
+        >
+          <div className="overviewSectionHead">
+            <div>
+              <span>{t('overview.serviceOverview')}</span>
+              <strong>{t('overview.liveSnapshot')}</strong>
+            </div>
+            <Activity size={18} />
           </div>
           <div className="serviceMetrics">
             <div>
@@ -831,79 +1275,301 @@ function Dashboard({
             </div>
             <div>
               <span>{t('overview.activeAutomation')}</span>
-              <strong>{activeJobs}</strong>
+              <strong>{activeAutomations}</strong>
             </div>
             <div>
               <span>{t('overview.listeners')}</span>
               <strong>{health?.listeners?.length ?? 0}</strong>
             </div>
           </div>
-        </section>
+        </ResizablePanel>
       </div>
-      <section className="overviewRangeBoard">
-        <div className="monitoringHead">
-          <div>
-            <span>{t('overview.runtimeWindow')}</span>
-            <strong>{t('overview.runtimeSummary')}</strong>
-          </div>
-          <div className="rangeSwitch">
-            {(['1h', '1d', '7d', 'all'] as OverviewRange[]).map(item => (
-              <button
-                key={item}
-                className={range === item ? 'active' : ''}
-                onClick={() => setRange(item)}
-              >
-                {t(`overview.range.${item}`)}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="overviewRuntimeGrid">
-          <div className="runtimeMetric">
-            <span>{t('overview.receivedMessages')}</span>
-            <strong>{receivedMessages}</strong>
-          </div>
-          <div className="runtimeMetric">
-            <span>{t('overview.sentMessages')}</span>
-            <strong>{sentMessages}</strong>
-          </div>
-          <div className="runtimeMetric">
-            <span>{t('overview.automationActions')}</span>
-            <strong>{automationActions}</strong>
-          </div>
-          <div className="runtimeMetric">
-            <span>{t('overview.completedRules')}</span>
-            <strong>{completedRules}</strong>
-          </div>
-          <section className="upcomingActions">
-            <div className="moduleHead">
-              <span>{t('overview.upcomingActions')}</span>
-              <code>{upcomingActions.length}</code>
+      <div className="overviewMetricStrip">
+        {[
+          [t('overview.receivedMessages'), receivedMessages],
+          [t('overview.sentMessages'), sentMessages],
+          [t('overview.automationActions'), automationActions],
+          [t('overview.completedRules'), completedRules],
+          [t('overview.successRate'), `${successRate}%`],
+        ].map(([label, value], index) => (
+          <ResizablePanel
+            storageKey={`overview-metric-${index}`}
+            className="runtimeMetric"
+            resetLabel={t('common.resetPanelSize')}
+            key={String(label)}
+          >
+            <span>{label}</span>
+            <strong>{value}</strong>
+          </ResizablePanel>
+        ))}
+      </div>
+      <div className="overviewOperationsGrid">
+        <div className="overviewMonitorColumn">
+          <ResizablePanel
+            storageKey="overview-traffic"
+            className="monitorModule trafficModule"
+            resetLabel={t('common.resetPanelSize')}
+          >
+            <div className="monitoringHead">
+              <div>
+                <span>{t('overview.trafficDescription')}</span>
+                <strong>{t('overview.traffic')}</strong>
+              </div>
+              <div className="rangeSwitch">
+                {(['1h', '1d', '7d', 'all'] as OverviewRange[]).map(item => (
+                  <button
+                    key={item}
+                    className={range === item ? 'active' : ''}
+                    onClick={() => setRange(item)}
+                  >
+                    {t(`overview.range.${item}`)}
+                  </button>
+                ))}
+              </div>
             </div>
-            {upcomingActions.length === 0 && (
-              <div className="empty">{t('overview.noUpcomingActions')}</div>
-            )}
-            {upcomingActions.map(run => (
-              <details className={`actionCard ${run.status}`} key={run.id}>
-                <summary>
-                  <div>
-                    <strong>{run.actionId}</strong>
-                    <span>{t(`run.${run.status}`)}</span>
+            <div className="trafficLegend">
+              <span className="received">{t('overview.received')}</span>
+              <span className="sent">{t('overview.sent')}</span>
+            </div>
+            <div className="trafficChart">
+              {trafficBuckets.map((bucket, index) => (
+                <div
+                  className="trafficColumn"
+                  title={`${bucket.label}: ${t('overview.received')} ${bucket.received}, ${t('overview.sent')} ${bucket.sent}`}
+                  key={`${bucket.label}-${index}`}
+                >
+                  <div className="trafficBars">
+                    <i
+                      className="received"
+                      style={{
+                        height: `${(bucket.received / peakTraffic) * 100}%`,
+                      }}
+                    />
+                    <i
+                      className="sent"
+                      style={{height: `${(bucket.sent / peakTraffic) * 100}%`}}
+                    />
                   </div>
-                  <code>
-                    {run.queuedAt
-                      ? new Date(run.queuedAt).toLocaleTimeString()
-                      : t('common.notAvailable')}
-                  </code>
-                </summary>
-                <pre>{JSON.stringify(run, null, 2)}</pre>
-              </details>
-            ))}
-          </section>
+                  <small>{bucket.label}</small>
+                </div>
+              ))}
+            </div>
+          </ResizablePanel>
+          <ResizablePanel
+            storageKey="overview-queue"
+            className="upcomingActions"
+            resetLabel={t('common.resetPanelSize')}
+          >
+            <div className="moduleHead">
+              <div>
+                <span>{t('overview.queueDescription')}</span>
+                <strong>{t('overview.upcomingActions')}</strong>
+              </div>
+              <code>
+                {upcomingActions.length + scheduledAutomations.length}
+              </code>
+            </div>
+            <div className="overviewActionList">
+              {upcomingActions.length === 0 &&
+                scheduledAutomations.length === 0 && (
+                  <div className="empty">{t('overview.noUpcomingActions')}</div>
+                )}
+              {scheduledAutomations.map(schedule => (
+                <details
+                  className="actionCard queued"
+                  key={`${schedule.ruleId}-${schedule.nextRunAt}`}
+                >
+                  <summary>
+                    <div>
+                      <strong>{schedule.ruleId}</strong>
+                      <span>{t(`overview.schedule.${schedule.mode}`)}</span>
+                    </div>
+                    <code>{new Date(schedule.nextRunAt).toLocaleString()}</code>
+                  </summary>
+                  <pre>{JSON.stringify(schedule, null, 2)}</pre>
+                </details>
+              ))}
+              {upcomingActions.map(run => (
+                <details className={`actionCard ${run.status}`} key={run.id}>
+                  <summary>
+                    <div>
+                      <strong>{run.actionId}</strong>
+                      <span>{t(`run.${run.status}`)}</span>
+                    </div>
+                    <code>
+                      {run.queuedAt
+                        ? new Date(run.queuedAt).toLocaleTimeString()
+                        : t('common.notAvailable')}
+                    </code>
+                  </summary>
+                  <pre>{JSON.stringify(run, null, 2)}</pre>
+                </details>
+              ))}
+            </div>
+          </ResizablePanel>
         </div>
-      </section>
+        <div className="overviewMonitorColumn">
+          <ResizablePanel
+            storageKey="overview-endpoints"
+            className="monitorModule endpointHealthModule"
+            resetLabel={t('common.resetPanelSize')}
+          >
+            <div className="moduleHead">
+              <div>
+                <span>{t('overview.endpointHealthDescription')}</span>
+                <strong>{t('overview.endpointHealth')}</strong>
+              </div>
+              <code>
+                {endpointCount}/{endpointStates.length}
+              </code>
+            </div>
+            <div className="overviewEndpointList">
+              {endpointStates.slice(0, 8).map(endpoint => (
+                <div
+                  className={endpoint.enabled ? '' : 'disabled'}
+                  key={`${endpoint.type}-${endpoint.id}`}
+                >
+                  <i />
+                  <span>
+                    <strong>{endpoint.id}</strong>
+                    <small>{endpoint.type}</small>
+                  </span>
+                  <code>{endpoint.target}</code>
+                  <em>
+                    {t(endpoint.enabled ? 'common.enabled' : 'common.disabled')}
+                  </em>
+                </div>
+              ))}
+              {endpointStates.length === 0 && (
+                <div className="empty">{t('overview.noEndpoints')}</div>
+              )}
+            </div>
+          </ResizablePanel>
+          <ResizablePanel
+            storageKey="overview-failures"
+            className="monitorModule failureModule"
+            resetLabel={t('common.resetPanelSize')}
+          >
+            <div className="moduleHead">
+              <div>
+                <span>{t('overview.failureDescription')}</span>
+                <strong>{t('overview.recentFailures')}</strong>
+              </div>
+              <code>{failedRuns.length}</code>
+            </div>
+            <div className="overviewFailureList">
+              {failedRuns.length === 0 && (
+                <div className="empty healthy">{t('overview.noFailures')}</div>
+              )}
+              {failedRuns.map(run => (
+                <div key={run.id}>
+                  <XCircle size={15} />
+                  <span>
+                    <strong>{run.actionId}</strong>
+                    <small>{run.error ?? t(`run.${run.status}`)}</small>
+                  </span>
+                  <time>
+                    {formatOptionalTime(
+                      run.finishedAt ?? run.startedAt ?? run.queuedAt,
+                    )}
+                  </time>
+                </div>
+              ))}
+            </div>
+          </ResizablePanel>
+        </div>
+      </div>
     </section>
   );
+}
+
+interface TrafficBucket {
+  label: string;
+  received: number;
+  sent: number;
+}
+
+function buildTrafficBuckets(
+  events: EventRow[],
+  runs: RunRow[],
+  range: OverviewRange,
+): TrafficBucket[] {
+  const now = Date.now();
+  const configuredSpan =
+    range === '1h'
+      ? 60 * 60 * 1000
+      : range === '1d'
+        ? 24 * 60 * 60 * 1000
+        : range === '7d'
+          ? 7 * 24 * 60 * 60 * 1000
+          : 0;
+  const timestamps = [
+    ...events.map(event => new Date(event.time).getTime()),
+    ...runs.map(run =>
+      new Date(run.finishedAt ?? run.startedAt ?? run.queuedAt ?? '').getTime(),
+    ),
+  ].filter(Number.isFinite);
+  const earliest = timestamps.length ? Math.min(...timestamps) : now;
+  const span = configuredSpan || Math.max(now - earliest, 60 * 60 * 1000);
+  const count = range === '7d' ? 14 : 12;
+  const step = span / count;
+  const start = now - span;
+  const buckets = Array.from({length: count}, (_, index): TrafficBucket => {
+    const bucketStart = start + index * step;
+    return {
+      label:
+        range === '7d' || range === 'all'
+          ? new Date(bucketStart).toLocaleDateString(undefined, {
+              month: 'numeric',
+              day: 'numeric',
+            })
+          : new Date(bucketStart).toLocaleTimeString(undefined, {
+              hour: '2-digit',
+              minute: '2-digit',
+            }),
+      received: 0,
+      sent: 0,
+    };
+  });
+  const bucketIndex = (timestamp: number) =>
+    Math.min(count - 1, Math.max(0, Math.floor((timestamp - start) / step)));
+  for (const event of events) {
+    const timestamp = new Date(event.time).getTime();
+    if (Number.isFinite(timestamp) && timestamp >= start)
+      buckets[bucketIndex(timestamp)].received += 1;
+  }
+  for (const run of runs) {
+    if (
+      run.actionType !== 'send_http' &&
+      run.actionType !== 'send_ws' &&
+      run.detail?.direction !== 'outbound'
+    ) {
+      continue;
+    }
+    const timestamp = new Date(
+      run.finishedAt ?? run.startedAt ?? run.queuedAt ?? '',
+    ).getTime();
+    if (Number.isFinite(timestamp) && timestamp >= start)
+      buckets[bucketIndex(timestamp)].sent += 1;
+  }
+  return buckets;
+}
+
+function latestActivityTime(events: EventRow[], runs: RunRow[]): string {
+  return (
+    [
+      ...events.map(event => event.time),
+      ...runs.map(run => run.finishedAt ?? run.startedAt ?? run.queuedAt ?? ''),
+    ]
+      .filter(Boolean)
+      .sort((left, right) => right.localeCompare(left))[0] ?? ''
+  );
+}
+
+function formatOptionalTime(value: string | undefined): string {
+  if (!value) return '-';
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toLocaleTimeString() : '-';
 }
 
 function DiagnosticsBanner({
@@ -949,7 +1615,7 @@ function DiagnosticsBanner({
         ))}
       </div>
       <code className="diagnosticsCommand">
-        {t('diagnostics.checkCommand')}
+        {t('diagnostics.checkCommand', {url: `${API_BASE}/api/health`})}
       </code>
     </section>
   );
@@ -995,8 +1661,8 @@ function EndpointsPanel({
   const [colors, setColors] = React.useState<Record<string, string>>(() =>
     readEndpointColors(),
   );
-  const host = config.app?.server?.host ?? '127.0.0.1';
-  const port = config.app?.server?.port ?? Number(new URL(API_BASE).port);
+  const host = config.app.server.host;
+  const port = config.app.server.port;
   const endpoints: EndpointDisplay[] = [
     ...config.endpoints.httpServers.map((endpoint, index) => ({
       kind: 'httpServer' as const,
@@ -1010,7 +1676,7 @@ function EndpointsPanel({
       fields: [
         [
           t('field.url'),
-          `http://${endpoint.host ?? host}:${endpoint.port ?? port}${endpoint.path ?? '/ingest'}`,
+          `http://${endpoint.host ?? host}:${endpoint.port ?? port}${endpoint.path}`,
         ],
         [t('field.messageFormat'), t('format.json')],
         ...(endpoint.template
@@ -1144,6 +1810,16 @@ function EndpointsPanel({
         id: draft.id.trim(),
         enabled: draft.enabled,
         url: draft.url.trim(),
+        description: emptyToUndefined(draft.description),
+        reconnect: {
+          enabled: draft.reconnectEnabled,
+          initialDelayMs: Number(draft.reconnectInitialDelayMs),
+          maxDelayMs: Number(draft.reconnectMaxDelayMs),
+          backoffMultiplier: Number(draft.reconnectBackoffMultiplier),
+        },
+        heartbeatIntervalMs: draft.heartbeatIntervalMs
+          ? Number(draft.heartbeatIntervalMs)
+          : undefined,
       };
       if (draft.index < 0) next.wsClients.push(value);
       else next.wsClients[draft.index] = value;
@@ -1291,8 +1967,10 @@ function EndpointsPanel({
           onSave={onSave}
         />
       ) : (
-        <div className="endpointWorkbench">
-          <section className="endpointCenter">
+        <EndpointSplitLayout
+          resizeRegistryLabel={t('endpoint.resizeRegistry')}
+          resizeInspectorLabel={t('endpoint.resizeInspector')}
+          registry={
             <EndpointConnectionTable
               endpoints={filteredEndpoints}
               allEndpoints={endpoints}
@@ -1315,9 +1993,9 @@ function EndpointsPanel({
               }
               onDelete={endpoint => void deleteEndpoint(endpoint)}
             />
-          </section>
-          <aside className="endpointInspector">
-            {editing ? (
+          }
+          inspector={
+            editing ? (
               <>
                 <div className="inspectorTabs">
                   <button
@@ -1360,9 +2038,9 @@ function EndpointsPanel({
                 <Settings2 size={22} />
                 <span>{t('endpoint.selectToInspect')}</span>
               </div>
-            )}
-          </aside>
-          <aside className="endpointSelectedLogs">
+            )
+          }
+          logs={
             <EndpointLogPanel
               logs={selectedLogs}
               t={t}
@@ -1372,8 +2050,8 @@ function EndpointsPanel({
                   : t('panel.endpointLogs')
               }
             />
-          </aside>
-        </div>
+          }
+        />
       )}
     </section>
   );
@@ -1409,7 +2087,7 @@ function EndpointConnectionTable({
   const selectedKey = selectedEndpoint?.key ?? '';
 
   return (
-    <>
+    <div className="connectionTable">
       <div className="connectionSummary">
         <div>
           <span>{t('endpoint.registryDescription')}</span>
@@ -1450,7 +2128,7 @@ function EndpointConnectionTable({
           </span>
         </div>
       </div>
-      <div className="connectionTable">
+      <div className="connectionRows">
         <div className="connectionTableHead">
           <span>{t('field.id')}</span>
           <span>{t('field.type')}</span>
@@ -1546,7 +2224,7 @@ function EndpointConnectionTable({
           </div>
         )}
       </div>
-    </>
+    </div>
   );
 }
 
@@ -1907,12 +2585,11 @@ function EndpointEditor({
             </label>
           )}
           {draft.kind === 'httpServer' && (
-            <label className="wideLabel">
+            <label>
               <span>{t('field.url')}</span>
               <input
                 value={draft.baseUrl}
                 onChange={event => update({baseUrl: event.target.value})}
-                placeholder="http://127.0.0.1:4789"
               />
             </label>
           )}
@@ -1943,7 +2620,7 @@ function EndpointEditor({
             </>
           )}
           {isServer && (
-            <label className="wideLabel">
+            <label>
               <span>{t('field.path')}</span>
               <input
                 value={draft.path}
@@ -1953,7 +2630,7 @@ function EndpointEditor({
           )}
           {draft.kind === 'httpServer' && (
             <>
-              <label className="wideLabel">
+              <label>
                 <span>{t('field.messageTemplate')}</span>
                 <select
                   value={draft.template}
@@ -1991,7 +2668,7 @@ function EndpointEditor({
                 />
               </label>
               <p className="formHint">{t('hint.headersJson')}</p>
-              <label className="wideLabel">
+              <label>
                 <span>{t('field.messageTemplate')}</span>
                 <select
                   value={draft.template}
@@ -2059,13 +2736,75 @@ function EndpointEditor({
             </>
           )}
           {draft.kind === 'wsClient' && (
-            <label className="wideLabel">
-              <span>{t('field.url')}</span>
-              <input
-                value={draft.url}
-                onChange={event => update({url: event.target.value})}
-              />
-            </label>
+            <>
+              <label className="wideLabel">
+                <span>{t('field.url')}</span>
+                <input
+                  value={draft.url}
+                  onChange={event => update({url: event.target.value})}
+                />
+              </label>
+              <fieldset className="actionReliabilityFields wideLabel">
+                <legend>{t('endpoint.connectionReliability')}</legend>
+                <label className="checkLabel">
+                  <input
+                    type="checkbox"
+                    checked={draft.reconnectEnabled}
+                    onChange={event =>
+                      update({reconnectEnabled: event.target.checked})
+                    }
+                  />
+                  <span>{t('endpoint.autoReconnect')}</span>
+                </label>
+                <label>
+                  <span>{t('endpoint.reconnectInitialDelay')}</span>
+                  <input
+                    type="number"
+                    min={100}
+                    value={draft.reconnectInitialDelayMs}
+                    onChange={event =>
+                      update({reconnectInitialDelayMs: event.target.value})
+                    }
+                  />
+                </label>
+                <label>
+                  <span>{t('endpoint.reconnectMaxDelay')}</span>
+                  <input
+                    type="number"
+                    min={100}
+                    value={draft.reconnectMaxDelayMs}
+                    onChange={event =>
+                      update({reconnectMaxDelayMs: event.target.value})
+                    }
+                  />
+                </label>
+                <label>
+                  <span>{t('endpoint.reconnectMultiplier')}</span>
+                  <input
+                    type="number"
+                    min={1}
+                    step="0.1"
+                    value={draft.reconnectBackoffMultiplier}
+                    onChange={event =>
+                      update({
+                        reconnectBackoffMultiplier: event.target.value,
+                      })
+                    }
+                  />
+                </label>
+                <label>
+                  <span>{t('endpoint.heartbeatInterval')}</span>
+                  <input
+                    type="number"
+                    min={1000}
+                    value={draft.heartbeatIntervalMs}
+                    onChange={event =>
+                      update({heartbeatIntervalMs: event.target.value})
+                    }
+                  />
+                </label>
+              </fieldset>
+            </>
           )}
         </div>
         <div className="modalActions">
@@ -2092,11 +2831,11 @@ function createEndpointDraft(
   const host =
     'host' in endpoint && endpoint.host
       ? endpoint.host
-      : (config.app?.server?.host ?? '127.0.0.1');
+      : config.app.server.host;
   const port =
     'port' in endpoint && endpoint.port
       ? endpoint.port
-      : (config.app?.server?.port ?? Number(new URL(API_BASE).port));
+      : config.app.server.port;
   return {
     kind,
     index,
@@ -2105,7 +2844,7 @@ function createEndpointDraft(
     description: 'description' in endpoint ? (endpoint.description ?? '') : '',
     host,
     port: String(port),
-    path: 'path' in endpoint ? (endpoint.path ?? '/ingest') : '',
+    path: 'path' in endpoint ? endpoint.path : '',
     baseUrl:
       'baseUrl' in endpoint
         ? endpoint.baseUrl
@@ -2124,6 +2863,24 @@ function createEndpointDraft(
       'headers' in endpoint
         ? JSON.stringify(endpoint.headers ?? {}, null, 2)
         : '{}',
+    reconnectEnabled:
+      'reconnect' in endpoint ? (endpoint.reconnect?.enabled ?? true) : true,
+    reconnectInitialDelayMs:
+      'reconnect' in endpoint
+        ? String(endpoint.reconnect?.initialDelayMs ?? 1000)
+        : '1000',
+    reconnectMaxDelayMs:
+      'reconnect' in endpoint
+        ? String(endpoint.reconnect?.maxDelayMs ?? 30000)
+        : '30000',
+    reconnectBackoffMultiplier:
+      'reconnect' in endpoint
+        ? String(endpoint.reconnect?.backoffMultiplier ?? 2)
+        : '2',
+    heartbeatIntervalMs:
+      'heartbeatIntervalMs' in endpoint
+        ? String(endpoint.heartbeatIntervalMs ?? '')
+        : '',
   };
 }
 
@@ -2132,28 +2889,27 @@ function createNewEndpointDraft(
   config: AppConfig,
 ): EndpointDraft {
   const id = nextEndpointId(kind, config.endpoints);
-  const baseUrl = `http://${config.app?.server?.host ?? '127.0.0.1'}:${config.app?.server?.port ?? Number(new URL(API_BASE).port)}`;
+  const baseUrl = `http://${formatUrlHost(config.app.server.host)}:${config.app.server.port}`;
   return {
     kind,
     index: -1,
     id,
-    enabled: true,
+    enabled: false,
     description: '',
-    host: config.app?.server?.host ?? '127.0.0.1',
-    port: String(config.app?.server?.port ?? Number(new URL(API_BASE).port)),
-    path:
-      kind === 'httpServer'
-        ? '/ingest'
-        : kind === 'wsServer'
-          ? `/ws/${id}`
-          : '',
-    baseUrl: kind === 'httpClient' || kind === 'httpServer' ? baseUrl : '',
-    url:
-      kind === 'wsClient' ? `${baseUrl.replace(/^http/, 'ws')}/ws/control` : '',
+    host: config.app.server.host,
+    port: String(config.app.server.port),
+    path: kind === 'httpServer' || kind === 'wsServer' ? `/${id}` : '',
+    baseUrl: kind === 'httpServer' ? baseUrl : '',
+    url: '',
     template: '',
     templateFields: [],
     templateValues: {},
     headersText: '{}',
+    reconnectEnabled: true,
+    reconnectInitialDelayMs: '1000',
+    reconnectMaxDelayMs: '30000',
+    reconnectBackoffMultiplier: '2',
+    heartbeatIntervalMs: '30000',
   };
 }
 
@@ -2200,7 +2956,7 @@ function endpointServerUrl(draft: EndpointDraft): string {
     return `${draft.baseUrl.replace(/\/$/u, '')}${draft.path || ''}`;
   }
   const protocol = draft.kind === 'wsServer' ? 'ws' : 'http';
-  return `${protocol}://${formatUrlHost(draft.host || '127.0.0.1')}:${draft.port || ''}${draft.path || ''}`;
+  return `${protocol}://${formatUrlHost(draft.host)}:${draft.port}${draft.path}`;
 }
 
 function parseHttpListenerUrl(
@@ -2453,6 +3209,7 @@ function countCompletedRuleExecutions(runs: RunRow[]): number {
 
 function diagnosticSuggestion(kind: ApiFailureKind, t: Translator): string {
   if (kind === 'network') return t('diagnostics.network');
+  if (kind === 'auth') return t('diagnostics.auth');
   if (kind === 'http') return t('diagnostics.http');
   if (kind === 'parse') return t('diagnostics.parse');
   return t('diagnostics.unknown');
@@ -2461,6 +3218,7 @@ function diagnosticSuggestion(kind: ApiFailureKind, t: Translator): string {
 function ActionsPanel({
   raw,
   actions,
+  endpoints,
   templates,
   queue,
   runs,
@@ -2472,6 +3230,7 @@ function ActionsPanel({
 }: {
   raw: string;
   actions: AppConfig['actions'];
+  endpoints: AppConfig['endpoints'];
   templates: MessageTemplateSummary[];
   queue: QueueSnapshot | null;
   runs: RunRow[];
@@ -2582,9 +3341,11 @@ function ActionsPanel({
               }
             >
               <option value="all">{t('action.allTypes')}</option>
-              <option value="send_http">{t('action.sendHttp')}</option>
-              <option value="send_ws">{t('action.sendWs')}</option>
-              <option value="command">{t('action.command')}</option>
+              {actionKinds.map(kind => (
+                <option value={kind} key={kind}>
+                  {actionTypeLabel(kind, t)}
+                </option>
+              ))}
             </select>
             <label className="endpointSearch">
               <Search size={15} />
@@ -2601,9 +3362,11 @@ function ActionsPanel({
                   setCreateKind(event.target.value as ActionKind)
                 }
               >
-                <option value="send_http">{t('action.sendHttp')}</option>
-                <option value="send_ws">{t('action.sendWs')}</option>
-                <option value="command">{t('action.command')}</option>
+                {actionKinds.map(kind => (
+                  <option value={kind} key={kind}>
+                    {actionTypeLabel(kind, t)}
+                  </option>
+                ))}
               </select>
               <button
                 onClick={() => {
@@ -2621,85 +3384,89 @@ function ActionsPanel({
       {viewMode === 'config' ? (
         <YamlEditor name="actions" value={raw} t={t} onSave={onSave} />
       ) : (
-        <div className="actionResourceWorkbench">
-          <section className="actionScheduleList">
-            <div className="actionRegistry">
-              <div className="actionRegistryHead">
-                <div>
-                  <span>{t('action.registryDescription')}</span>
-                  <strong>{t('action.registry')}</strong>
-                </div>
-                <div>
-                  <span>
-                    <strong>
-                      {filteredActions.length}/{actions.length}
-                    </strong>
-                    {t('action.visible')}
-                  </span>
-                  <span>
-                    <strong>{activeRuns.length}</strong>
-                    {t('action.activeRuns')}
-                  </span>
-                </div>
-              </div>
-              <div className="actionTableHead">
-                <span>{t('field.id')}</span>
-                <span>{t('field.type')}</span>
-                <span>{t('action.target')}</span>
-                <span>{t('action.lastRun')}</span>
-                <span />
-              </div>
-              {filteredActions.map(action => {
-                const index = actions.indexOf(action);
-                const lastRun = runs.find(run => run.actionId === action.id);
-                return (
-                  <div
-                    role="button"
-                    tabIndex={0}
-                    className={
-                      draft?.index === index
-                        ? 'actionResourceRow selected'
-                        : 'actionResourceRow'
-                    }
-                    key={action.id}
-                    onClick={() => setDraft(createActionDraft(action, index))}
-                    onKeyDown={event => {
-                      if (event.key === 'Enter' || event.key === ' ')
-                        setDraft(createActionDraft(action, index));
-                    }}
-                  >
+        <ActionSplitLayout
+          resizeColumnLabel={t('action.resizeList')}
+          resizeRowLabel={t('action.resizeDetails')}
+          registry={
+            <section className="actionLibraryList">
+              <div className="actionRegistry">
+                <div className="actionRegistryHead">
+                  <div>
+                    <span>{t('action.registryDescription')}</span>
+                    <strong>{t('action.registry')}</strong>
+                  </div>
+                  <div>
                     <span>
-                      <i className={action.type} />
-                      <strong>{action.id}</strong>
+                      <strong>
+                        {filteredActions.length}/{actions.length}
+                      </strong>
+                      {t('action.visible')}
                     </span>
-                    <code>{actionTypeLabel(action.type, t)}</code>
-                    <span>{actionTargetSummary(action)}</span>
-                    <em>
-                      {lastRun
-                        ? `${t(`run.${lastRun.status}`)}${lastRun.durationMs ? ` / ${lastRun.durationMs}ms` : ''}`
-                        : t('action.neverRun')}
-                    </em>
-                    <span className="rowActions">
-                      <button
-                        className="dangerIconButton"
-                        onClick={event => {
-                          event.stopPropagation();
-                          void deleteAction(action, index);
-                        }}
-                        title={`${t('common.delete')} ${action.id}`}
-                      >
-                        <Trash2 size={15} />
-                      </button>
+                    <span>
+                      <strong>{activeRuns.length}</strong>
+                      {t('action.activeRuns')}
                     </span>
                   </div>
-                );
-              })}
-              {filteredActions.length === 0 && (
-                <div className="connectionEmpty">{t('action.noMatches')}</div>
-              )}
-            </div>
-          </section>
-          <section className="actionScheduleDetails">
+                </div>
+                <div className="actionTableHead">
+                  <span>{t('field.id')}</span>
+                  <span>{t('field.type')}</span>
+                  <span>{t('action.target')}</span>
+                  <span>{t('action.lastRun')}</span>
+                  <span />
+                </div>
+                {filteredActions.map(action => {
+                  const index = actions.indexOf(action);
+                  const lastRun = runs.find(run => run.actionId === action.id);
+                  return (
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      className={
+                        draft?.index === index
+                          ? 'actionResourceRow selected'
+                          : 'actionResourceRow'
+                      }
+                      key={action.id}
+                      onClick={() => setDraft(createActionDraft(action, index))}
+                      onKeyDown={event => {
+                        if (event.key === 'Enter' || event.key === ' ')
+                          setDraft(createActionDraft(action, index));
+                      }}
+                    >
+                      <span>
+                        <i className={action.type} />
+                        <strong>{action.id}</strong>
+                      </span>
+                      <code>{actionTypeLabel(action.type, t)}</code>
+                      <span>{actionTargetSummary(action)}</span>
+                      <em>
+                        {lastRun
+                          ? `${t(`run.${lastRun.status}`)}${lastRun.durationMs ? ` / ${lastRun.durationMs}ms` : ''}`
+                          : t('action.neverRun')}
+                      </em>
+                      <span className="rowActions">
+                        <button
+                          className="dangerIconButton"
+                          onClick={event => {
+                            event.stopPropagation();
+                            void deleteAction(action, index);
+                          }}
+                          title={`${t('common.delete')} ${action.id}`}
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </span>
+                    </div>
+                  );
+                })}
+                {filteredActions.length === 0 && (
+                  <div className="connectionEmpty">{t('action.noMatches')}</div>
+                )}
+              </div>
+            </section>
+          }
+          runtime={
             <section className="actionRuntimePanel">
               <div className="actionRegistryHead">
                 <div>
@@ -2719,7 +3486,9 @@ function ActionsPanel({
                 </div>
               </div>
             </section>
-            <aside className="actionInspector">
+          }
+          inspector={
+            <section className="actionInspector">
               {draft ? (
                 <>
                   <div className="inspectorTabs">
@@ -2741,6 +3510,7 @@ function ActionsPanel({
                   {inspectorMode === 'config' ? (
                     <ActionEditor
                       draft={draft}
+                      endpoints={endpoints}
                       templates={templates}
                       t={t}
                       error={saveError}
@@ -2766,9 +3536,9 @@ function ActionsPanel({
                   <span>{t('action.selectToInspect')}</span>
                 </div>
               )}
-            </aside>
-          </section>
-        </div>
+            </section>
+          }
+        />
       )}
     </section>
   );
@@ -2776,6 +3546,7 @@ function ActionsPanel({
 
 function ActionEditor({
   draft,
+  endpoints,
   templates,
   t,
   error,
@@ -2783,6 +3554,7 @@ function ActionEditor({
   onSave,
 }: {
   draft: ActionDraft;
+  endpoints: AppConfig['endpoints'];
   templates: MessageTemplateSummary[];
   t: Translator;
   error: string | null;
@@ -2811,18 +3583,20 @@ function ActionEditor({
       </div>
       <div className="formGrid">
         {error && <div className="formError wideLabel">{error}</div>}
-        <label className="wideLabel">
+        <label>
           <span>{t('field.type')}</span>
           <select
             value={draft.type}
             onChange={event => update({type: event.target.value as ActionKind})}
           >
-            <option value="send_http">{t('action.sendHttp')}</option>
-            <option value="send_ws">{t('action.sendWs')}</option>
-            <option value="command">{t('action.command')}</option>
+            {actionKinds.map(kind => (
+              <option value={kind} key={kind}>
+                {actionTypeLabel(kind, t)}
+              </option>
+            ))}
           </select>
         </label>
-        <label className="wideLabel">
+        <label>
           <span>{t('field.id')}</span>
           <input
             value={draft.id}
@@ -2836,6 +3610,28 @@ function ActionEditor({
             onChange={event => update({description: event.target.value})}
           />
         </label>
+        <label>
+          <span>{t('action.expressionPolicy')}</span>
+          <select
+            value={draft.expressionPolicy}
+            onChange={event =>
+              update({
+                expressionPolicy: event.target
+                  .value as ActionDraft['expressionPolicy'],
+              })
+            }
+          >
+            <option value="error">{t('action.expressionPolicy.error')}</option>
+            <option value="empty">{t('action.expressionPolicy.empty')}</option>
+            <option value="preserve">
+              {t('action.expressionPolicy.preserve')}
+            </option>
+          </select>
+        </label>
+        <div className="actionExpressionHint wideLabel">
+          <Code2 size={16} />
+          <span>{t('action.expressionHint')}</span>
+        </div>
         {draft.type === 'send_http' && (
           <>
             <label>
@@ -2869,7 +3665,7 @@ function ActionEditor({
                 spellCheck={false}
               />
             </label>
-            <label className="wideLabel">
+            <label>
               <span>{t('field.messageTemplate')}</span>
               <select
                 value={draft.template}
@@ -2927,7 +3723,7 @@ function ActionEditor({
         )}
         {draft.type === 'send_ws' && (
           <>
-            <label className="wideLabel">
+            <label>
               <span>{t('action.wsTarget')}</span>
               <input
                 value={draft.target}
@@ -2945,26 +3741,118 @@ function ActionEditor({
             </label>
           </>
         )}
-        {draft.type === 'command' && (
+        {(draft.type === 'send_http' || draft.type === 'send_ws') && (
+          <fieldset className="actionReliabilityFields wideLabel">
+            <legend>{t('action.reliability')}</legend>
+            <label>
+              <span>{t('action.timeout')}</span>
+              <input
+                type="number"
+                min={1}
+                value={draft.timeoutMs}
+                onChange={event => update({timeoutMs: event.target.value})}
+              />
+            </label>
+            <label>
+              <span>{t('action.retryMaxAttempts')}</span>
+              <input
+                type="number"
+                min={1}
+                max={8}
+                value={draft.retryMaxAttempts}
+                onChange={event =>
+                  update({retryMaxAttempts: event.target.value})
+                }
+              />
+            </label>
+            <label>
+              <span>{t('action.retryInitialDelay')}</span>
+              <input
+                type="number"
+                min={0}
+                value={draft.retryInitialDelayMs}
+                onChange={event =>
+                  update({retryInitialDelayMs: event.target.value})
+                }
+              />
+            </label>
+            <label>
+              <span>{t('action.retryMultiplier')}</span>
+              <input
+                type="number"
+                min={1}
+                step="0.1"
+                value={draft.retryBackoffMultiplier}
+                onChange={event =>
+                  update({retryBackoffMultiplier: event.target.value})
+                }
+              />
+            </label>
+            <label>
+              <span>{t('action.retryMaxDelay')}</span>
+              <input
+                type="number"
+                min={0}
+                value={draft.retryMaxDelayMs}
+                onChange={event =>
+                  update({retryMaxDelayMs: event.target.value})
+                }
+              />
+            </label>
+            {draft.type === 'send_http' && (
+              <label>
+                <span>{t('action.idempotencyKey')}</span>
+                <input
+                  value={draft.idempotencyKey}
+                  onChange={event =>
+                    update({idempotencyKey: event.target.value})
+                  }
+                />
+              </label>
+            )}
+          </fieldset>
+        )}
+        {(draft.type === 'command' || draft.type === 'script') && (
           <>
             <div className="actionSecurityNotice wideLabel">
               <Terminal size={17} />
               <span>{t('action.commandSecurity')}</span>
             </div>
-            <label className="wideLabel">
+            <label>
               <span>{t('action.cwd')}</span>
               <input
                 value={draft.cwd}
                 onChange={event => update({cwd: event.target.value})}
               />
             </label>
-            <label className="wideLabel">
-              <span>{t('action.commandExecutable')}</span>
-              <input
-                value={draft.command}
-                onChange={event => update({command: event.target.value})}
-              />
-            </label>
+            {draft.type === 'command' ? (
+              <label>
+                <span>{t('action.commandExecutable')}</span>
+                <input
+                  value={draft.command}
+                  onChange={event => update({command: event.target.value})}
+                />
+              </label>
+            ) : (
+              <>
+                <label>
+                  <span>{t('action.interpreter')}</span>
+                  <input
+                    value={draft.interpreter}
+                    onChange={event =>
+                      update({interpreter: event.target.value})
+                    }
+                  />
+                </label>
+                <label className="wideLabel">
+                  <span>{t('action.scriptPath')}</span>
+                  <input
+                    value={draft.script}
+                    onChange={event => update({script: event.target.value})}
+                  />
+                </label>
+              </>
+            )}
             <label className="wideLabel">
               <span>{t('action.arguments')}</span>
               <textarea
@@ -2983,15 +3871,143 @@ function ActionEditor({
                 onChange={event => update({timeoutMs: event.target.value})}
               />
             </label>
+            {draft.type === 'command' && (
+              <label className="checkLabel">
+                <input
+                  type="checkbox"
+                  checked={draft.allowConcurrent}
+                  onChange={event =>
+                    update({allowConcurrent: event.target.checked})
+                  }
+                />
+                <span>{t('action.allowConcurrent')}</span>
+              </label>
+            )}
+          </>
+        )}
+        {(draft.type === 'notification' || draft.type === 'prompt') && (
+          <>
+            <label>
+              <span>{t('action.interactionTitle')}</span>
+              <input
+                value={draft.title}
+                onChange={event => update({title: event.target.value})}
+              />
+            </label>
+            <label className="wideLabel">
+              <span>{t('action.interactionMessage')}</span>
+              <textarea
+                className="formTextarea actionJsonEditor"
+                value={draft.message}
+                onChange={event => update({message: event.target.value})}
+              />
+            </label>
+            {draft.type === 'prompt' && (
+              <>
+                <label className="wideLabel">
+                  <span>{t('action.promptOptions')}</span>
+                  <textarea
+                    className="formTextarea actionJsonEditor"
+                    value={draft.optionsText}
+                    onChange={event =>
+                      update({optionsText: event.target.value})
+                    }
+                    spellCheck={false}
+                  />
+                </label>
+                <label>
+                  <span>{t('action.timeout')}</span>
+                  <input
+                    type="number"
+                    min={1}
+                    value={draft.timeoutMs}
+                    onChange={event => update({timeoutMs: event.target.value})}
+                  />
+                </label>
+              </>
+            )}
+          </>
+        )}
+        {draft.type === 'wait_event' && (
+          <>
             <label className="checkLabel">
               <input
                 type="checkbox"
-                checked={draft.allowConcurrent}
-                onChange={event =>
-                  update({allowConcurrent: event.target.checked})
-                }
+                checked={draft.anySource}
+                onChange={event => update({anySource: event.target.checked})}
               />
-              <span>{t('action.allowConcurrent')}</span>
+              <span>{t('rule.anySource')}</span>
+            </label>
+            <label>
+              <span>{t('field.source')}</span>
+              <select
+                disabled={draft.anySource}
+                value={draft.source}
+                onChange={event => update({source: event.target.value})}
+              >
+                <option value="">{t('workflow.selectSource')}</option>
+                {actionEventSources(endpoints).map(source => (
+                  <option value={source} key={source}>
+                    {source}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>{t('field.eventKind')}</span>
+              <select
+                value={draft.eventKind}
+                onChange={event =>
+                  update({
+                    eventKind: event.target.value as ActionDraft['eventKind'],
+                  })
+                }
+              >
+                <option value="">{t('rule.anyKind')}</option>
+                <option value="http.request">http.request</option>
+                <option value="http.response">http.response</option>
+                <option value="ws.message">ws.message</option>
+                <option value="action.result">action.result</option>
+                <option value="timer.trigger">timer.trigger</option>
+              </select>
+            </label>
+            <label>
+              <span>{t('field.messageTemplate')}</span>
+              <select
+                value={draft.template}
+                onChange={event => update({template: event.target.value})}
+              >
+                <option value="">{t('template.none')}</option>
+                {templates
+                  .filter(
+                    template =>
+                      template.capabilities.receive ||
+                      template.capabilities.match,
+                  )
+                  .map(template => (
+                    <option value={template.name} key={template.name}>
+                      {template.displayName}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <label className="wideLabel">
+              <span>{t('action.matchConfiguration')}</span>
+              <textarea
+                className="formTextarea actionJsonEditor"
+                value={draft.matchText}
+                onChange={event => update({matchText: event.target.value})}
+                spellCheck={false}
+              />
+            </label>
+            <label>
+              <span>{t('action.timeout')}</span>
+              <input
+                type="number"
+                min={1}
+                value={draft.timeoutMs}
+                onChange={event => update({timeoutMs: event.target.value})}
+              />
             </label>
           </>
         )}
@@ -3126,19 +4142,27 @@ function ActionRunRows({
 }
 
 function createActionDraft(action: AppAction, index: number): ActionDraft {
+  const isProcess = action.type === 'command' || action.type === 'script';
   return {
     index,
     id: action.id,
     type: action.type,
     description: action.description ?? '',
-    cwd: action.type === 'command' ? action.cwd : '',
+    cwd: isProcess ? action.cwd : '',
     command: action.type === 'command' ? action.command : '',
-    argsText:
-      action.type === 'command'
-        ? JSON.stringify(action.args ?? [], null, 2)
-        : '[]',
+    interpreter: action.type === 'script' ? action.interpreter : 'node',
+    script: action.type === 'script' ? action.script : '',
+    argsText: isProcess ? JSON.stringify(action.args ?? [], null, 2) : '[]',
     timeoutMs:
-      action.type === 'command' ? String(action.timeoutMs ?? 30000) : '30000',
+      action.type === 'command' || action.type === 'script'
+        ? String(action.timeoutMs ?? 30000)
+        : action.type === 'send_http' || action.type === 'send_ws'
+          ? String(
+              action.timeoutMs ?? (action.type === 'send_http' ? 15000 : 10000),
+            )
+          : action.type === 'prompt' || action.type === 'wait_event'
+            ? String(action.timeoutMs ?? 300000)
+            : '30000',
     allowConcurrent:
       action.type === 'command' ? (action.allowConcurrent ?? false) : false,
     method: action.type === 'send_http' ? action.method : 'POST',
@@ -3148,15 +4172,57 @@ function createActionDraft(action: AppAction, index: number): ActionDraft {
         ? JSON.stringify(action.headers ?? {}, null, 2)
         : '{}',
     bodyText:
-      action.type === 'command'
-        ? '{}'
-        : JSON.stringify(action.body ?? {}, null, 2),
-    template: action.type === 'send_http' ? (action.template ?? '') : '',
+      action.type === 'send_http' || action.type === 'send_ws'
+        ? JSON.stringify(action.body ?? {}, null, 2)
+        : '{}',
+    template:
+      action.type === 'send_http' || action.type === 'wait_event'
+        ? (action.template ?? '')
+        : '',
     templateValues:
       action.type === 'send_http'
         ? stringifyTemplateValues(action.templateValues ?? {})
         : {},
     target: action.type === 'send_ws' ? action.target : '',
+    title:
+      action.type === 'notification' || action.type === 'prompt'
+        ? action.title
+        : 'LAS',
+    message:
+      action.type === 'notification' || action.type === 'prompt'
+        ? action.message
+        : '',
+    optionsText:
+      action.type === 'prompt'
+        ? JSON.stringify(action.options, null, 2)
+        : '["Confirm", "Cancel"]',
+    anySource:
+      action.type === 'wait_event' ? (action.anySource ?? false) : true,
+    source: action.type === 'wait_event' ? (action.source ?? '') : '',
+    eventKind: action.type === 'wait_event' ? (action.kind ?? '') : '',
+    matchText:
+      action.type === 'wait_event'
+        ? JSON.stringify(action.match ?? {}, null, 2)
+        : '{}',
+    expressionPolicy: action.expressionPolicy ?? 'error',
+    retryMaxAttempts:
+      action.type === 'send_http' || action.type === 'send_ws'
+        ? String(action.retry?.maxAttempts ?? 1)
+        : '1',
+    retryInitialDelayMs:
+      action.type === 'send_http' || action.type === 'send_ws'
+        ? String(action.retry?.initialDelayMs ?? 500)
+        : '500',
+    retryBackoffMultiplier:
+      action.type === 'send_http' || action.type === 'send_ws'
+        ? String(action.retry?.backoffMultiplier ?? 2)
+        : '2',
+    retryMaxDelayMs:
+      action.type === 'send_http' || action.type === 'send_ws'
+        ? String(action.retry?.maxDelayMs ?? 30000)
+        : '30000',
+    idempotencyKey:
+      action.type === 'send_http' ? (action.idempotencyKey ?? '') : '',
   };
 }
 
@@ -3166,8 +4232,12 @@ function createNewActionDraft(
 ): ActionDraft {
   const prefixes: Record<ActionKind, string> = {
     command: 'command',
+    script: 'script',
     send_http: 'send-http',
     send_ws: 'send-ws',
+    notification: 'notification',
+    prompt: 'prompt',
+    wait_event: 'wait-event',
   };
   const ids = new Set(actions.map(action => action.id));
   let index = 1;
@@ -3179,6 +4249,8 @@ function createNewActionDraft(
     description: '',
     cwd: '',
     command: '',
+    interpreter: 'node',
+    script: '',
     argsText: '[]',
     timeoutMs: '30000',
     allowConcurrent: false,
@@ -3189,6 +4261,19 @@ function createNewActionDraft(
     template: '',
     templateValues: {},
     target: '',
+    title: 'LAS',
+    message: '',
+    optionsText: '["Confirm", "Cancel"]',
+    anySource: true,
+    source: '',
+    eventKind: '',
+    matchText: '{}',
+    expressionPolicy: 'error',
+    retryMaxAttempts: '1',
+    retryInitialDelayMs: '500',
+    retryBackoffMultiplier: '2',
+    retryMaxDelayMs: '30000',
+    idempotencyKey: '',
   };
 }
 
@@ -3196,12 +4281,10 @@ function actionFromDraft(draft: ActionDraft): AppAction {
   const base = {
     id: draft.id.trim(),
     description: emptyToUndefined(draft.description),
+    expressionPolicy: draft.expressionPolicy,
   };
   if (draft.type === 'command') {
-    const args = JSON.parse(draft.argsText || '[]') as unknown;
-    if (!Array.isArray(args) || args.some(value => typeof value !== 'string')) {
-      throw new Error('Command arguments must be a JSON string array.');
-    }
+    const args = parseStringArray(draft.argsText, 'Command arguments');
     return {
       ...base,
       type: 'command',
@@ -3212,6 +4295,17 @@ function actionFromDraft(draft: ActionDraft): AppAction {
       allowConcurrent: draft.allowConcurrent,
     };
   }
+  if (draft.type === 'script') {
+    return {
+      ...base,
+      type: 'script',
+      cwd: draft.cwd.trim(),
+      interpreter: draft.interpreter.trim(),
+      script: draft.script.trim(),
+      args: parseStringArray(draft.argsText, 'Script arguments'),
+      timeoutMs: Number(draft.timeoutMs),
+    };
+  }
   if (draft.type === 'send_http') {
     return {
       ...base,
@@ -3219,6 +4313,9 @@ function actionFromDraft(draft: ActionDraft): AppAction {
       method: draft.method,
       url: draft.url.trim(),
       headers: parseHeaders(draft.headersText),
+      timeoutMs: Number(draft.timeoutMs),
+      retry: retryPolicyFromDraft(draft),
+      idempotencyKey: emptyToUndefined(draft.idempotencyKey),
       ...(draft.template
         ? {
             template: draft.template,
@@ -3227,12 +4324,70 @@ function actionFromDraft(draft: ActionDraft): AppAction {
         : {body: parseOptionalJson(draft.bodyText)}),
     };
   }
+  if (draft.type === 'send_ws') {
+    return {
+      ...base,
+      type: 'send_ws',
+      target: draft.target.trim(),
+      body: parseOptionalJson(draft.bodyText),
+      timeoutMs: Number(draft.timeoutMs),
+      retry: retryPolicyFromDraft(draft),
+    };
+  }
+  if (draft.type === 'notification') {
+    return {
+      ...base,
+      type: 'notification',
+      title: draft.title.trim(),
+      message: draft.message,
+    };
+  }
+  if (draft.type === 'prompt') {
+    return {
+      ...base,
+      type: 'prompt',
+      title: draft.title.trim(),
+      message: draft.message,
+      options: parseStringArray(draft.optionsText, 'Prompt options'),
+      timeoutMs: Number(draft.timeoutMs),
+    };
+  }
   return {
     ...base,
-    type: 'send_ws',
-    target: draft.target.trim(),
-    body: parseOptionalJson(draft.bodyText),
+    type: 'wait_event',
+    anySource: draft.anySource,
+    source: draft.anySource ? undefined : emptyToUndefined(draft.source),
+    kind: draft.eventKind || undefined,
+    template: emptyToUndefined(draft.template),
+    match: parseMatchConfig(draft.matchText),
+    timeoutMs: Number(draft.timeoutMs),
   };
+}
+
+function retryPolicyFromDraft(draft: ActionDraft) {
+  return {
+    maxAttempts: Number(draft.retryMaxAttempts),
+    initialDelayMs: Number(draft.retryInitialDelayMs),
+    backoffMultiplier: Number(draft.retryBackoffMultiplier),
+    maxDelayMs: Number(draft.retryMaxDelayMs),
+  };
+}
+
+function parseStringArray(value: string, label: string): string[] {
+  const parsed = JSON.parse(value || '[]') as unknown;
+  if (!Array.isArray(parsed) || parsed.some(item => typeof item !== 'string')) {
+    throw new Error(`${label} must be a JSON string array.`);
+  }
+  return parsed;
+}
+
+function parseMatchConfig(value: string): MatchConfig | undefined {
+  const parsed = parseOptionalJson(value);
+  if (parsed === undefined) return undefined;
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Match configuration must be a JSON object.');
+  }
+  return parsed as MatchConfig;
 }
 
 function stringifyTemplateValues(
@@ -3391,1009 +4546,33 @@ function parseOptionalJson(value: string): unknown {
 function actionTargetSummary(action: AppAction): string {
   if (action.type === 'command')
     return `${action.command} ${action.args?.join(' ') ?? ''}`.trim();
+  if (action.type === 'script') return `${action.interpreter} ${action.script}`;
   if (action.type === 'send_http') return `${action.method} ${action.url}`;
-  return action.target;
+  if (action.type === 'send_ws') return action.target;
+  if (action.type === 'wait_event') return action.source ?? '*';
+  return action.title;
 }
 
 function actionTypeLabel(type: ActionKind, t: Translator): string {
-  if (type === 'command') return t('action.command');
-  if (type === 'send_http') return t('action.sendHttp');
-  return t('action.sendWs');
-}
-
-function RulesPanel({
-  raw,
-  rules,
-  actions,
-  templates,
-  t,
-  onSaveRules,
-  onSave,
-  onTest,
-}: {
-  raw: string;
-  rules: AppConfig['rules'];
-  actions: AppConfig['actions'];
-  templates: MessageTemplateSummary[];
-  t: Translator;
-  onSaveRules: (rules: AppConfig['rules'], id: string) => Promise<void>;
-  onSave: (content: string) => Promise<void>;
-  onTest: (eventText: string) => Promise<RuleTestResult>;
-}) {
-  const [viewMode, setViewMode] = React.useState<EndpointViewMode>('graph');
-  const [query, setQuery] = React.useState('');
-  const [statusFilter, setStatusFilter] =
-    React.useState<RuleStatusFilter>('all');
-  const [draft, setDraft] = React.useState<RuleDraft | null>(() =>
-    rules[0] ? createRuleDraft(rules[0], 0, templates) : null,
-  );
-  const [inspectorMode, setInspectorMode] =
-    React.useState<RuleInspectorMode>('config');
-  const [eventText, setEventText] = React.useState(
-    JSON.stringify(
-      {
-        source: 'http.server.local-http',
-        kind: 'http.request',
-        body: {command: 'hello'},
-        meta: {path: '/ingest', method: 'POST'},
-      },
-      null,
-      2,
-    ),
-  );
-  const [result, setResult] = React.useState<RuleTestResult | null>(null);
-  const [testError, setTestError] = React.useState<string | null>(null);
-  const [saveError, setSaveError] = React.useState<string | null>(null);
-  const filteredRules = rules.filter(
-    rule =>
-      (statusFilter === 'all' ||
-        (statusFilter === 'enabled' ? rule.enabled : !rule.enabled)) &&
-      `${rule.id} ${rule.description ?? ''} ${rule.when.source ?? ''} ${rule.then.map(step => step.action).join(' ')}`
-        .toLowerCase()
-        .includes(query.trim().toLowerCase()),
-  );
-  const selectedRule =
-    draft?.index === -1 ? undefined : rules[draft?.index ?? -1];
-  const selectedTest = result?.matches.find(
-    match => match.ruleId === draft?.id,
-  );
-
-  React.useEffect(() => {
-    if (!draft && rules[0]) setDraft(createRuleDraft(rules[0], 0, templates));
-  }, [rules, templates]);
-
-  async function saveDraft() {
-    if (!draft) return;
-    setSaveError(null);
-    try {
-      const next = structuredClone(rules);
-      const rule = ruleFromDraft(draft);
-      if (draft.index < 0) next.push(rule);
-      else next[draft.index] = rule;
-      await onSaveRules(next, rule.id);
-      setDraft(
-        createRuleDraft(
-          rule,
-          next.findIndex(item => item.id === rule.id),
-          templates,
-        ),
-      );
-    } catch (error) {
-      setSaveError(errorMessage(error));
-    }
-  }
-
-  async function runTest() {
-    setTestError(null);
-    try {
-      setResult(await onTest(eventText));
-    } catch (error) {
-      setTestError(errorMessage(error));
-    }
-  }
-
-  async function deleteRule(rule: AppConfig['rules'][number], index: number) {
-    if (!window.confirm(t('common.confirmDelete', {id: rule.id}))) return;
-    const next = rules.filter((_, itemIndex) => itemIndex !== index);
-    setDraft(null);
-    await onSaveRules(next, rule.id);
-  }
-
-  return (
-    <section className="ruleWorkspace">
-      <div className="workspaceToolbar">
-        <div className="endpointViewSwitch">
-          <button
-            className={viewMode === 'graph' ? 'active' : ''}
-            onClick={() => setViewMode('graph')}
-          >
-            <GitBranch size={15} />
-            {t('rule.management')}
-          </button>
-          <button
-            className={viewMode === 'config' ? 'active' : ''}
-            onClick={() => setViewMode('config')}
-          >
-            <Settings2 size={15} />
-            {t('common.configView')}
-          </button>
-        </div>
-        {viewMode === 'graph' && (
-          <div className="ruleToolbarActions">
-            <select
-              value={statusFilter}
-              onChange={event =>
-                setStatusFilter(event.target.value as RuleStatusFilter)
-              }
-            >
-              <option value="all">{t('rule.allStatuses')}</option>
-              <option value="enabled">{t('common.enabled')}</option>
-              <option value="disabled">{t('common.disabled')}</option>
-            </select>
-            <label className="endpointSearch">
-              <Search size={15} />
-              <input
-                value={query}
-                onChange={event => setQuery(event.target.value)}
-                placeholder={t('rule.search')}
-              />
-            </label>
-            <button
-              onClick={() => {
-                setDraft(createNewRuleDraft(rules));
-                setInspectorMode('config');
-              }}
-            >
-              <Plus size={16} />
-              {t('rule.create')}
-            </button>
-          </div>
-        )}
-      </div>
-      {viewMode === 'config' ? (
-        <YamlEditor name="rules" value={raw} t={t} onSave={onSave} />
-      ) : (
-        <div className="ruleWorkbench">
-          <section className="ruleCenter">
-            <div className="ruleRegistry">
-              <div className="ruleRegistryHead">
-                <div>
-                  <span>{t('rule.registryDescription')}</span>
-                  <strong>{t('rule.registry')}</strong>
-                </div>
-                <div>
-                  <span>
-                    <strong>
-                      {filteredRules.length}/{rules.length}
-                    </strong>
-                    {t('rule.visible')}
-                  </span>
-                  <span>
-                    <strong>{rules.filter(rule => rule.enabled).length}</strong>
-                    {t('rule.active')}
-                  </span>
-                </div>
-              </div>
-              <div className="ruleTableHead">
-                <span>{t('field.id')}</span>
-                <span>{t('rule.triggerSource')}</span>
-                <span>{t('rule.condition')}</span>
-                <span>{t('rule.actions')}</span>
-                <span />
-              </div>
-              {filteredRules.map(rule => {
-                const index = rules.indexOf(rule);
-                return (
-                  <div
-                    role="button"
-                    tabIndex={0}
-                    className={`ruleRow${draft?.index === index ? ' selected' : ''}${rule.enabled ? '' : ' disabled'}`}
-                    key={rule.id}
-                    onClick={() =>
-                      setDraft(createRuleDraft(rule, index, templates))
-                    }
-                    onKeyDown={event => {
-                      if (event.key === 'Enter' || event.key === ' ')
-                        setDraft(createRuleDraft(rule, index, templates));
-                    }}
-                  >
-                    <span>
-                      <i className={rule.enabled ? 'online' : ''} />
-                      <strong>{rule.id}</strong>
-                      <small
-                        className={
-                          rule.enabled
-                            ? 'statusBadge enabled'
-                            : 'statusBadge disabled'
-                        }
-                      >
-                        {rule.enabled
-                          ? t('common.enabled')
-                          : t('common.disabled')}
-                      </small>
-                    </span>
-                    <code>
-                      {rule.when.anySource
-                        ? t('rule.anySource')
-                        : (rule.when.source ?? t('rule.anySource'))}
-                    </code>
-                    <span>{ruleConditionSummary(rule, t)}</span>
-                    <em>
-                      {rule.then.map(step => step.action).join(', ') ||
-                        t('rule.noActions')}
-                    </em>
-                    <span className="rowActions">
-                      <button
-                        className="dangerIconButton"
-                        onClick={event => {
-                          event.stopPropagation();
-                          void deleteRule(rule, index);
-                        }}
-                        title={`${t('common.delete')} ${rule.id}`}
-                      >
-                        <Trash2 size={15} />
-                      </button>
-                    </span>
-                  </div>
-                );
-              })}
-              {filteredRules.length === 0 && (
-                <div className="connectionEmpty">{t('rule.noMatches')}</div>
-              )}
-            </div>
-          </section>
-          <aside className="ruleInspector">
-            {draft ? (
-              <>
-                <div className="inspectorTabs">
-                  <button
-                    className={inspectorMode === 'config' ? 'active' : ''}
-                    onClick={() => setInspectorMode('config')}
-                  >
-                    <Settings2 size={15} />
-                    {t('rule.configuration')}
-                  </button>
-                  <button
-                    className={inspectorMode === 'test' ? 'active' : ''}
-                    onClick={() => setInspectorMode('test')}
-                  >
-                    <TestTube2 size={15} />
-                    {t('rule.simulation')}
-                  </button>
-                </div>
-                {inspectorMode === 'config' ? (
-                  <RuleEditor
-                    draft={draft}
-                    actions={actions}
-                    templates={templates}
-                    t={t}
-                    error={saveError}
-                    onChange={setDraft}
-                    onSave={() => void saveDraft()}
-                  />
-                ) : (
-                  <RuleSimulator
-                    eventText={eventText}
-                    selectedTest={selectedTest}
-                    error={testError}
-                    t={t}
-                    onChange={setEventText}
-                    onTest={() => void runTest()}
-                  />
-                )}
-              </>
-            ) : (
-              <div className="inspectorEmpty">
-                <GitBranch size={22} />
-                <span>{t('rule.selectToInspect')}</span>
-              </div>
-            )}
-          </aside>
-          <RuleFlow
-            rule={selectedRule ?? (draft ? ruleFromDraft(draft) : undefined)}
-            t={t}
-          />
-        </div>
-      )}
-    </section>
-  );
-}
-
-function RuleFlow({
-  rule,
-  t,
-}: {
-  rule?: AppConfig['rules'][number];
-  t: Translator;
-}) {
-  return (
-    <section className="ruleFlowPanel">
-      <div className="ruleFlowHead">
-        <div>
-          <span>{t('rule.flowDescription')}</span>
-          <strong>{t('rule.executionFlow')}</strong>
-        </div>
-        <em>{rule?.id ?? t('rule.selectToInspect')}</em>
-      </div>
-      {rule ? (
-        <div className="ruleFlow">
-          <div>
-            <CircleDot size={18} />
-            <span>{t('rule.triggerSource')}</span>
-            <strong>
-              {rule.when.anySource
-                ? t('rule.anySource')
-                : (rule.when.source ?? t('rule.anySource'))}
-            </strong>
-          </div>
-          <GitBranch size={18} />
-          <div>
-            <GitBranch size={18} />
-            <span>{t('rule.condition')}</span>
-            <strong>{ruleConditionSummary(rule, t)}</strong>
-          </div>
-          <GitBranch size={18} />
-          <div>
-            <Play size={18} />
-            <span>{t('rule.actions')}</span>
-            <strong>
-              {rule.then.map(step => step.action).join(', ') ||
-                t('rule.noActions')}
-            </strong>
-          </div>
-        </div>
-      ) : (
-        <div className="connectionEmpty">{t('rule.selectToInspect')}</div>
-      )}
-    </section>
-  );
-}
-
-function RuleEditor({
-  draft,
-  actions,
-  templates,
-  t,
-  error,
-  onChange,
-  onSave,
-}: {
-  draft: RuleDraft;
-  actions: AppConfig['actions'];
-  templates: MessageTemplateSummary[];
-  t: Translator;
-  error: string | null;
-  onChange: (draft: RuleDraft) => void;
-  onSave: () => void;
-}) {
-  const update = (patch: Partial<RuleDraft>) => onChange({...draft, ...patch});
-  const selectedTemplate = templates.find(
-    template => template.name === draft.template,
-  );
-  const matchFields =
-    selectedTemplate?.fields.filter(field => field.roles.match) ?? [];
-  const updateTemplateCondition = (
-    conditionId: string,
-    patch: Partial<TemplateConditionDraft>,
-  ) =>
-    update({
-      templateConditions: draft.templateConditions.map(condition =>
-        condition.id === conditionId ? {...condition, ...patch} : condition,
-      ),
-    });
-  const addTemplateCondition = () => {
-    const firstField = matchFields[0];
-    if (!firstField) return;
-    update({
-      templateConditions: [
-        ...draft.templateConditions,
-        {
-          id: `template-condition-${Date.now()}`,
-          label: firstField.label,
-          path: templateFieldValuePath(firstField.key),
-          operator: 'equals',
-          value: '',
-        },
-      ],
-    });
+  const keys: Record<ActionKind, string> = {
+    command: 'action.command',
+    script: 'action.script',
+    send_http: 'action.sendHttp',
+    send_ws: 'action.sendWs',
+    notification: 'action.notification',
+    prompt: 'action.prompt',
+    wait_event: 'action.waitEvent',
   };
-  return (
-    <section className="ruleEditor">
-      <div className="modalHead">
-        <div>
-          <span>{t('rule.configuration')}</span>
-          <h2>{draft.id}</h2>
-        </div>
-      </div>
-      <div className="formGrid ruleConfigGrid">
-        {error && <div className="formError wideLabel">{error}</div>}
-        <label>
-          <span>{t('field.id')}</span>
-          <input
-            value={draft.id}
-            onChange={event => update({id: event.target.value})}
-          />
-        </label>
-        <div className="ruleToggleRow">
-          <label className="checkLabel">
-            <input
-              type="checkbox"
-              checked={draft.enabled}
-              onChange={event => update({enabled: event.target.checked})}
-            />
-            <span>{t('field.enabled')}</span>
-          </label>
-          <label className="checkLabel">
-            <input
-              type="checkbox"
-              checked={draft.anySource}
-              onChange={event => update({anySource: event.target.checked})}
-            />
-            <span>{t('rule.anySource')}</span>
-          </label>
-        </div>
-        <label className="wideLabel">
-          <span>{t('field.description')}</span>
-          <input
-            value={draft.description}
-            onChange={event => update({description: event.target.value})}
-          />
-        </label>
-        {!draft.anySource && (
-          <label>
-            <span>{t('rule.triggerSource')}</span>
-            <input
-              value={draft.source}
-              onChange={event => update({source: event.target.value})}
-            />
-          </label>
-        )}
-        <label>
-          <span>{t('rule.eventKind')}</span>
-          <select
-            value={draft.kind}
-            onChange={event => update({kind: event.target.value})}
-          >
-            <option value="">{t('rule.anyKind')}</option>
-            {[
-              'http.request',
-              'http.response',
-              'ws.message',
-              'action.result',
-            ].map(kind => (
-              <option value={kind} key={kind}>
-                {kind}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          <span>{t('rule.operator')}</span>
-          <select
-            value={draft.operator}
-            onChange={event =>
-              update({operator: event.target.value as RuleDraft['operator']})
-            }
-          >
-            <option value="none">{t('rule.noCondition')}</option>
-            <option value="equals">{t('rule.equals')}</option>
-            <option value="contains">{t('rule.contains')}</option>
-            <option value="regex">{t('rule.regex')}</option>
-          </select>
-        </label>
-        {draft.operator !== 'none' && (
-          <>
-            <label>
-              <span>JSONPath</span>
-              <input
-                value={draft.jsonPath}
-                onChange={event => update({jsonPath: event.target.value})}
-                placeholder="$.body.command"
-              />
-            </label>
-            <label>
-              <span>{t('rule.expectedValue')}</span>
-              <input
-                value={draft.matchValue}
-                onChange={event => update({matchValue: event.target.value})}
-              />
-            </label>
-          </>
-        )}
-        <fieldset className="templateConditionPanel wideLabel">
-          <legend>{t('rule.templateMatching')}</legend>
-          <label>
-            <span>{t('field.messageTemplate')}</span>
-            <select
-              value={draft.template}
-              onChange={event =>
-                update({template: event.target.value, templateConditions: []})
-              }
-            >
-              <option value="">{t('common.noTemplate')}</option>
-              {templates
-                .filter(template => template.capabilities.match)
-                .map(template => (
-                  <option value={template.name} key={template.name}>
-                    {template.displayName}
-                  </option>
-                ))}
-            </select>
-          </label>
-          {selectedTemplate && (
-            <>
-              <div className="templateConditionList">
-                {draft.templateConditions.map(condition => (
-                  <div className="templateConditionRow" key={condition.id}>
-                    <select
-                      value={condition.path}
-                      onChange={event => {
-                        const item = matchFields.find(
-                          field =>
-                            templateFieldValuePath(field.key) ===
-                            event.target.value,
-                        );
-                        updateTemplateCondition(condition.id, {
-                          label: item?.label ?? event.target.value,
-                          path: event.target.value,
-                        });
-                      }}
-                    >
-                      {matchFields.map(item => (
-                        <option
-                          value={templateFieldValuePath(item.key)}
-                          key={item.key}
-                        >
-                          {item.label} · {item.valueType}
-                        </option>
-                      ))}
-                    </select>
-                    <select
-                      value={condition.operator}
-                      onChange={event =>
-                        updateTemplateCondition(condition.id, {
-                          operator: event.target
-                            .value as TemplateConditionDraft['operator'],
-                        })
-                      }
-                    >
-                      <option value="equals">{t('rule.equals')}</option>
-                      <option value="contains">{t('rule.contains')}</option>
-                      <option value="regex">{t('rule.regex')}</option>
-                    </select>
-                    <input
-                      value={condition.value}
-                      onChange={event =>
-                        updateTemplateCondition(condition.id, {
-                          value: event.target.value,
-                        })
-                      }
-                      placeholder={t('rule.expectedValue')}
-                    />
-                    <button
-                      className="dangerIconButton"
-                      onClick={() =>
-                        update({
-                          templateConditions: draft.templateConditions.filter(
-                            item => item.id !== condition.id,
-                          ),
-                        })
-                      }
-                      title={t('common.delete')}
-                    >
-                      <Trash2 size={15} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-              <button type="button" onClick={addTemplateCondition}>
-                <Plus size={15} />
-                {t('rule.addTemplateCondition')}
-              </button>
-            </>
-          )}
-        </fieldset>
-        <fieldset className="ruleActionPicker">
-          <legend>{t('rule.actions')}</legend>
-          {actions.map(action => (
-            <label key={action.id}>
-              <input
-                type="checkbox"
-                checked={draft.actions.includes(action.id)}
-                onChange={event =>
-                  update({
-                    actions: event.target.checked
-                      ? [...draft.actions, action.id]
-                      : draft.actions.filter(id => id !== action.id),
-                  })
-                }
-              />
-              <span>
-                <strong>{action.id}</strong>
-                <small>{action.type}</small>
-              </span>
-            </label>
-          ))}
-        </fieldset>
-      </div>
-      <div className="modalActions">
-        <button className="primaryButton" onClick={onSave}>
-          <Save size={15} />
-          {t('common.save')}
-        </button>
-      </div>
-    </section>
-  );
+  return t(keys[type]);
 }
 
-function RuleSimulator({
-  eventText,
-  selectedTest,
-  error,
-  t,
-  onChange,
-  onTest,
-}: {
-  eventText: string;
-  selectedTest?: RuleTestResult['matches'][number];
-  error: string | null;
-  t: Translator;
-  onChange: (value: string) => void;
-  onTest: () => void;
-}) {
-  return (
-    <section className="ruleSimulator">
-      <div className="modalHead">
-        <div>
-          <span>{t('rule.simulation')}</span>
-          <h2>{t('panel.ruleTester')}</h2>
-        </div>
-      </div>
-      <div className="ruleSimulatorBody">
-        <label>
-          <span>{t('rule.testEvent')}</span>
-          <textarea
-            className="ruleEventEditor"
-            value={eventText}
-            onChange={event => onChange(event.target.value)}
-            spellCheck={false}
-          />
-        </label>
-        {error && <div className="formError">{error}</div>}
-        {selectedTest && (
-          <div
-            className={
-              selectedTest.matched
-                ? 'ruleTestSummary matched'
-                : 'ruleTestSummary'
-            }
-          >
-            <strong>
-              {selectedTest.matched ? t('rule.matched') : t('rule.missed')}
-            </strong>
-            <span>
-              {selectedTest.actions.join(', ') || t('rule.noActions')}
-            </span>
-          </div>
-        )}
-        <div className="ruleChecks">
-          {(selectedTest?.checks ?? []).map((check, index) => (
-            <div
-              className={check.matched ? 'matched' : 'failed'}
-              key={`${check.field}-${index}`}
-            >
-              <span>{t(`rule.check.${check.field}`)}</span>
-              <strong>
-                {check.matched ? t('rule.matched') : t('rule.missed')}
-              </strong>
-              <small>{formatRuleCheck(check)}</small>
-            </div>
-          ))}
-        </div>
-      </div>
-      <div className="modalActions">
-        <button className="primaryButton" onClick={onTest}>
-          <TestTube2 size={15} />
-          {t('common.test')}
-        </button>
-      </div>
-    </section>
-  );
-}
-
-function createRuleDraft(
-  rule: AppConfig['rules'][number],
-  index: number,
-  templates: MessageTemplateSummary[],
-): RuleDraft {
-  const match = rule.when.match;
-  const allConditions = match?.all ?? [];
-  const template = allConditions.find(isTemplateNameCondition)?.equals;
-  const selectedTemplate =
-    typeof template === 'string'
-      ? templates.find(item => item.name === template)
-      : undefined;
-  const baseCondition =
-    match && hasConditionOperator(match)
-      ? match
-      : allConditions.find(
-          condition =>
-            !isTemplateNameCondition(condition) &&
-            !templateFieldDraftFromMatch(condition, 0, selectedTemplate),
-        );
-  const operator: RuleDraft['operator'] = baseCondition
-    ? Object.hasOwn(baseCondition, 'equals')
-      ? 'equals'
-      : baseCondition.contains
-        ? 'contains'
-        : baseCondition.regex
-          ? 'regex'
-          : 'none'
-    : 'none';
-  const rawValue =
-    operator === 'equals'
-      ? baseCondition?.equals
-      : operator === 'contains'
-        ? baseCondition?.contains
-        : operator === 'regex'
-          ? baseCondition?.regex
-          : '';
-  return {
-    index,
-    id: rule.id,
-    enabled: rule.enabled,
-    description: rule.description ?? '',
-    anySource: rule.when.anySource ?? !rule.when.source,
-    source: rule.when.source ?? '',
-    kind: rule.when.kind ?? '',
-    operator,
-    jsonPath: baseCondition?.jsonPath ?? '$.body',
-    matchValue:
-      operator === 'equals' ? JSON.stringify(rawValue) : String(rawValue ?? ''),
-    template: typeof template === 'string' ? template : '',
-    templateConditions: allConditions
-      .map((condition, conditionIndex) =>
-        templateFieldDraftFromMatch(
-          condition,
-          conditionIndex,
-          selectedTemplate,
-        ),
-      )
-      .filter((condition): condition is TemplateConditionDraft =>
-        Boolean(condition),
-      ),
-    actions: rule.then.map(step => step.action),
-  };
-}
-
-function createNewRuleDraft(rules: AppConfig['rules']): RuleDraft {
-  let index = 1;
-  const ids = new Set(rules.map(rule => rule.id));
-  while (ids.has(`rule-${index}`)) index += 1;
-  return {
-    index: -1,
-    id: `rule-${index}`,
-    enabled: true,
-    description: '',
-    anySource: true,
-    source: '',
-    kind: '',
-    operator: 'none',
-    jsonPath: '$.body',
-    matchValue: '',
-    template: '',
-    templateConditions: [],
-    actions: [],
-  };
-}
-
-function ruleFromDraft(draft: RuleDraft): AppConfig['rules'][number] {
-  const baseCondition =
-    draft.operator === 'none'
-      ? undefined
-      : {
-          jsonPath: draft.jsonPath.trim() || undefined,
-          ...(draft.operator === 'equals'
-            ? {equals: parseRuleValue(draft.matchValue)}
-            : {}),
-          ...(draft.operator === 'contains'
-            ? {contains: draft.matchValue}
-            : {}),
-          ...(draft.operator === 'regex' ? {regex: draft.matchValue} : {}),
-        };
-  const templateConditions: MatchCondition[] = [
-    ...(draft.template
-      ? [{jsonPath: '$.meta.decoded.template', equals: draft.template}]
-      : []),
-    ...draft.templateConditions.map((condition): MatchCondition => ({
-      jsonPath: condition.path,
-      ...(condition.operator === 'equals'
-        ? {equals: parseRuleValue(condition.value)}
-        : {}),
-      ...(condition.operator === 'contains' ? {contains: condition.value} : {}),
-      ...(condition.operator === 'regex' ? {regex: condition.value} : {}),
-    })),
+function actionEventSources(endpoints: AppConfig['endpoints']): string[] {
+  return [
+    ...endpoints.httpServers.map(endpoint => `http.server.${endpoint.id}`),
+    ...endpoints.wsServers.map(endpoint => `ws.server.${endpoint.id}`),
+    ...endpoints.wsClients.map(endpoint => `ws.client.${endpoint.id}`),
+    'ui.manual',
   ];
-  const match =
-    templateConditions.length > 0
-      ? {
-          all: [
-            ...(baseCondition ? [baseCondition] : []),
-            ...templateConditions,
-          ],
-        }
-      : baseCondition;
-  return {
-    id: draft.id.trim(),
-    enabled: draft.enabled,
-    description: emptyToUndefined(draft.description),
-    when: {
-      ...(draft.anySource ? {anySource: true} : {source: draft.source.trim()}),
-      ...(draft.kind
-        ? {kind: draft.kind as AppConfig['rules'][number]['when']['kind']}
-        : {}),
-      ...(match ? {match} : {}),
-    },
-    then: draft.actions.map(action => ({action})),
-  };
-}
-
-function parseRuleValue(value: string): unknown {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return value;
-  }
-}
-
-function ruleConditionSummary(
-  rule: AppConfig['rules'][number],
-  t: Translator,
-): string {
-  const match = rule.when.match;
-  if (!match) return rule.when.kind ?? t('rule.noCondition');
-  if (match.all?.length) {
-    return match.all
-      .map(condition => conditionSummary(condition, t))
-      .join(' + ');
-  }
-  return conditionSummary(match, t);
-}
-
-function conditionSummary(match: MatchCondition, t: Translator): string {
-  const templateLabel = templateFieldLabelFromPath(match.jsonPath);
-  if (
-    match.jsonPath === '$.meta.decoded.template' &&
-    Object.hasOwn(match, 'equals')
-  )
-    return `${t('field.messageTemplate')} = ${String(match.equals)}`;
-  const pathLabel = templateLabel
-    ? `${t('rule.templateField')} ${templateLabel}`
-    : (match.jsonPath ?? '$.body');
-  if (Object.hasOwn(match, 'equals'))
-    return `${pathLabel} = ${formatLogValue(match.equals)}`;
-  if (match.contains)
-    return `${pathLabel} ${t('rule.contains')} ${match.contains}`;
-  if (match.regex) return `${pathLabel} /${match.regex}/`;
-  return t('rule.noCondition');
-}
-
-function hasConditionOperator(condition: MatchCondition): boolean {
-  return (
-    Object.hasOwn(condition, 'equals') ||
-    Boolean(condition.contains) ||
-    Boolean(condition.regex)
-  );
-}
-
-function isTemplateNameCondition(
-  condition: MatchCondition,
-): condition is MatchCondition & {equals: string} {
-  return (
-    condition.jsonPath === '$.meta.decoded.template' &&
-    typeof condition.equals === 'string'
-  );
-}
-
-function templateFieldValuePath(key: string): string {
-  return `$.meta.decoded.values[${JSON.stringify(key)}]`;
-}
-
-function templateFieldLabelFromPath(pathValue?: string): string | null {
-  if (!pathValue) return null;
-  const key = templateFieldKeyFromPath(pathValue);
-  if (key) return key;
-  const match =
-    /^\$\.meta\.decoded\.displayItems\[\?\(@\.label==(.+)\)\]\.value$/.exec(
-      pathValue,
-    );
-  if (!match) return null;
-  try {
-    return JSON.parse(match[1]) as string;
-  } catch {
-    return null;
-  }
-}
-
-function templateFieldKeyFromPath(pathValue?: string): string | null {
-  if (!pathValue) return null;
-  const match = /^\$\.meta\.decoded\.values\[(.+)\]$/.exec(pathValue);
-  if (!match) return null;
-  try {
-    const key = JSON.parse(match[1]) as unknown;
-    return typeof key === 'string' ? key : null;
-  } catch {
-    return null;
-  }
-}
-
-function templateFieldIndexFromPath(pathValue?: string): number | null {
-  if (!pathValue) return null;
-  const match = /^\$\.meta\.decoded\.displayItems\[(\d+)\]\.value$/.exec(
-    pathValue,
-  );
-  return match ? Number(match[1]) : null;
-}
-
-function templateFieldDraftFromMatch(
-  condition: MatchCondition,
-  index: number,
-  template?: MessageTemplateSummary,
-): TemplateConditionDraft | null {
-  const fieldKey = templateFieldKeyFromPath(condition.jsonPath);
-  const fieldIndex = templateFieldIndexFromPath(condition.jsonPath);
-  const legacyLabel = templateFieldLabelFromPath(condition.jsonPath);
-  const legacyFields = templateLegacyDisplayFields(template);
-  const field = fieldKey
-    ? template?.fields.find(item => item.key === fieldKey)
-    : fieldIndex !== null
-      ? legacyFields[fieldIndex]
-      : template?.fields.find(item => item.label === legacyLabel);
-  const label = field?.label ?? fieldKey ?? legacyLabel;
-  if (!label) return null;
-  const operator: TemplateConditionDraft['operator'] = Object.hasOwn(
-    condition,
-    'equals',
-  )
-    ? 'equals'
-    : condition.contains
-      ? 'contains'
-      : 'regex';
-  const rawValue =
-    operator === 'equals'
-      ? condition.equals
-      : operator === 'contains'
-        ? condition.contains
-        : condition.regex;
-  return {
-    id: `template-condition-${index}`,
-    label,
-    path: field
-      ? templateFieldValuePath(field.key)
-      : (condition.jsonPath ?? '$.body'),
-    operator,
-    value:
-      operator === 'equals' ? JSON.stringify(rawValue) : String(rawValue ?? ''),
-  };
-}
-
-function templateLegacyDisplayFields(
-  template?: MessageTemplateSummary,
-): MessageTemplateField[] {
-  return (template?.fields ?? [])
-    .filter(field => field.roles.display)
-    .sort(
-      (left, right) =>
-        (left.displayOrder ?? Number.MAX_SAFE_INTEGER) -
-        (right.displayOrder ?? Number.MAX_SAFE_INTEGER),
-    );
-}
-
-function formatRuleCheck(
-  check: RuleTestResult['matches'][number]['checks'][number],
-): string {
-  const path = check.path ? `${check.path}: ` : '';
-  return `${path}${formatLogValue(check.actual)} / ${formatLogValue(check.expected)}`;
 }
 
 function Logs({
@@ -4424,7 +4603,7 @@ function Logs({
     if (!paused) setSnapshot({events, runs});
   }, [events, runs, paused]);
 
-  const allItems = unifiedLogItems(snapshot.events, snapshot.runs);
+  const allItems = unifiedLogItems(snapshot.events, snapshot.runs, t);
   const filtered = allItems.filter(
     item =>
       (category === 'all' || item.category === category) &&
@@ -4517,7 +4696,11 @@ function Logs({
         </div>
       </div>
       <div className="logWorkbench">
-        <section className="logCenter">
+        <ResizablePanel
+          storageKey="logs-stream"
+          className="logCenter"
+          resetLabel={t('common.resetPanelSize')}
+        >
           <div className="logSummary">
             <div>
               <span>{t('logs.centerDescription')}</span>
@@ -4589,8 +4772,12 @@ function Logs({
                 t('logs.noMatches')}
             </pre>
           )}
-        </section>
-        <aside className="traceInspector">
+        </ResizablePanel>
+        <ResizablePanel
+          storageKey="logs-trace"
+          className="traceInspector"
+          resetLabel={t('common.resetPanelSize')}
+        >
           <div className="traceHead">
             <span>{t('logs.traceDescription')}</span>
             <strong>{t('logs.trace')}</strong>
@@ -4616,13 +4803,17 @@ function Logs({
               <div className="inspectorEmpty">{t('logs.selectTrace')}</div>
             )}
           </div>
-        </aside>
+        </ResizablePanel>
       </div>
     </section>
   );
 }
 
-function unifiedLogItems(events: EventRow[], runs: RunRow[]): UnifiedLogItem[] {
+function unifiedLogItems(
+  events: EventRow[],
+  runs: RunRow[],
+  t: Translator,
+): UnifiedLogItem[] {
   return [
     ...events.map((event): UnifiedLogItem => ({
       id: event.id,
@@ -4649,11 +4840,18 @@ function unifiedLogItems(events: EventRow[], runs: RunRow[]): UnifiedLogItem[] {
             ? 'ok'
             : 'active',
       title: run.actionId,
-      summary: run.output ?? run.error ?? run.target ?? run.status,
+      summary: runLogSummary(run, t),
       source: run.ruleId ?? 'manual',
       raw: run,
     })),
   ].sort((a, b) => b.time.localeCompare(a.time));
+}
+
+function runLogSummary(run: RunRow, t: Translator): string {
+  const summary = run.output ?? run.error ?? run.target ?? run.status;
+  return run.attempts && run.attempts > 1
+    ? `${summary} · ${t('logs.attempts', {count: run.attempts})}`
+    : summary;
 }
 
 function traceSteps(
@@ -4688,6 +4886,26 @@ function traceSteps(
           detail: run.actionType ?? '',
           status: 'active',
         });
+      const workflow = workflowRunTimeline(run);
+      for (const node of workflow) {
+        steps.push({
+          time: node.finishedAt ?? node.startedAt,
+          title: `${node.nodeId} · ${t(`workflow.node.${node.nodeType}`)}`,
+          detail: [
+            t(`workflow.runtime.${node.status}`),
+            node.outcome ? t(`workflow.outcome.${node.outcome}`) : '',
+            node.error ?? '',
+          ]
+            .filter(Boolean)
+            .join(' · '),
+          status:
+            node.status === 'failed' || node.status === 'cancelled'
+              ? 'failed'
+              : node.status === 'running'
+                ? 'active'
+                : 'ok',
+        });
+      }
       steps.push({
         time: item.time,
         title: `${run.actionId} · ${t(`run.${run.status}`)}`,
@@ -4723,6 +4941,13 @@ function traceSteps(
     }
   }
   return steps.sort((a, b) => a.time.localeCompare(b.time));
+}
+
+function workflowRunTimeline(run: RunRow): WorkflowRunDetail['timeline'] {
+  const detail = run.detail as Partial<WorkflowRunDetail> | undefined;
+  return detail?.kind === 'workflow' && Array.isArray(detail.timeline)
+    ? detail.timeline
+    : [];
 }
 
 function formatUnifiedConsoleLine(item: UnifiedLogItem): string {
@@ -4762,6 +4987,8 @@ function YamlEditor({
   return (
     <Panel
       title={title ?? `${name}.yaml`}
+      resizableKey={`yaml-${name}`}
+      resetLabel={t('common.resetPanelSize')}
       actions={
         <button
           onClick={() => void handleSave()}
@@ -4786,16 +5013,39 @@ function Panel({
   title,
   actions,
   children,
-}: React.PropsWithChildren<{title: string; actions?: React.ReactNode}>) {
-  return (
-    <section className="panel">
+  resizableKey,
+  resetLabel,
+}: React.PropsWithChildren<{
+  title: string;
+  actions?: React.ReactNode;
+  resizableKey?: string;
+  resetLabel?: string;
+}>) {
+  const content = (
+    <>
       <div className="panelHead">
         <h2>{title}</h2>
         {actions}
       </div>
       {children}
-    </section>
+    </>
+  );
+  return resizableKey && resetLabel ? (
+    <ResizablePanel
+      storageKey={resizableKey}
+      className="panel"
+      resetLabel={resetLabel}
+    >
+      {content}
+    </ResizablePanel>
+  ) : (
+    <section className="panel">{content}</section>
   );
 }
 
-ReactDOM.createRoot(document.getElementById('root')!).render(<App />);
+const rootElement = document.getElementById('root');
+if (!rootElement) throw new Error('Missing #root application container.');
+const reactRoot =
+  import.meta.hot?.data.reactRoot ?? ReactDOM.createRoot(rootElement);
+if (import.meta.hot) import.meta.hot.data.reactRoot = reactRoot;
+reactRoot.render(<App />);

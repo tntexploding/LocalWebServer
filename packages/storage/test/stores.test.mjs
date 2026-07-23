@@ -1,0 +1,149 @@
+import assert from 'node:assert/strict';
+import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+import YAML from 'yaml';
+import {ConfigStore, JsonFileStore, JsonlStore} from '../dist/index.js';
+
+test('rotates JSONL records and reads newest records across files', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'las-jsonl-'));
+  t.after(() => rm(directory, {recursive: true, force: true}));
+  const file = path.join(directory, 'events.jsonl');
+  const store = new JsonlStore(file, {maxBytes: 35, maxFiles: 2});
+
+  for (const id of ['a', 'b', 'c', 'd']) {
+    await store.append({id, value: '1234567890'});
+  }
+
+  assert.deepEqual(
+    (await store.latest(10)).map(row => row.id),
+    ['d', 'c', 'b'],
+  );
+  assert.equal((await store.findById('c')).id, 'c');
+  assert.equal(await store.findById('a'), undefined);
+});
+
+test('serializes concurrent JSON state replacements', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'las-json-'));
+  t.after(() => rm(directory, {recursive: true, force: true}));
+  const file = path.join(directory, 'state.json');
+  const store = new JsonFileStore(file);
+
+  await Promise.all([
+    store.save({version: 1, value: 'first'}),
+    store.save({version: 1, value: 'second'}),
+    store.save({version: 1, value: 'last'}),
+  ]);
+
+  assert.deepEqual(await store.load({}), {version: 1, value: 'last'});
+  assert.equal(JSON.parse(await readFile(file, 'utf8')).value, 'last');
+});
+
+test('skips a partial JSONL line left by an interrupted write', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'las-partial-'));
+  t.after(() => rm(directory, {recursive: true, force: true}));
+  const file = path.join(directory, 'runs.jsonl');
+  await writeFile(file, '{"id":"old"}\n{"id":\n{"id":"new"}\n', 'utf8');
+  const store = new JsonlStore(file);
+
+  assert.deepEqual(
+    (await store.latest()).map(row => row.id),
+    ['new', 'old'],
+  );
+});
+
+test('migrates, versions, validates, restores, and redacts config files', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'las-config-'));
+  t.after(() => rm(root, {recursive: true, force: true}));
+  const configDir = path.join(root, 'config');
+  await mkdir(configDir, {recursive: true});
+  await Promise.all([
+    writeJson(path.join(configDir, 'app.yaml'), {
+      server: {host: '127.0.0.1', port: 4789, webSocketPath: '/ws'},
+      security: {
+        apiToken: '${secret:apiToken}',
+        requireTokenForRead: true,
+        allowedApiSources: ['127.0.0.1', '::1'],
+        corsOrigins: [],
+        allowedCommandRoots: [],
+        allowShell: false,
+      },
+      automation: {maxConcurrentActions: 2},
+      storage: {
+        eventLogPath: 'data/events.jsonl',
+        runLogPath: 'data/runs.jsonl',
+        auditLogPath: 'data/security-audit.jsonl',
+        schedulerStatePath: 'data/scheduler-state.json',
+        configHistoryPath: 'data/config-history',
+        configHistoryLimit: 10,
+        maxLogBytes: 1048576,
+        maxLogFiles: 2,
+      },
+    }),
+    writeJson(path.join(configDir, 'endpoints.yaml'), {}),
+    writeJson(path.join(configDir, 'rules.yaml'), {rules: []}),
+    writeJson(path.join(configDir, 'actions.yaml'), {actions: []}),
+    writeJson(path.join(configDir, 'secrets.yaml'), {
+      version: 1,
+      secrets: {apiToken: 'private-test-token'},
+    }),
+  ]);
+  const store = new ConfigStore(root);
+  const loaded = await store.load();
+  assert.equal(loaded.app.version, 1);
+  assert.equal(loaded.app.security.apiToken, 'private-test-token');
+  assert.equal(store.redact(loaded).app.security.apiToken, '[REDACTED]');
+  assert.deepEqual(
+    store.redact({
+      body: {
+        token: 'arbitrary-value',
+        detail: 'prefix-private-test-token-suffix',
+      },
+    }),
+    {
+      body: {
+        token: '[REDACTED]',
+        detail: 'prefix-[REDACTED]-suffix',
+      },
+    },
+  );
+  assert.equal(
+    YAML.parse(await readFile(path.join(configDir, 'app.yaml'), 'utf8'))
+      .version,
+    1,
+  );
+  assert.equal((await store.listHistory()).length, 4);
+
+  await store.saveEndpoints({
+    ...loaded.endpoints,
+    httpServers: [
+      {id: 'inbound', enabled: true, path: '/message', description: 'new'},
+    ],
+  });
+  const revisions = await store.listHistory('endpoints');
+  assert.ok(revisions.length >= 2);
+  const beforeInvalid = (await store.loadRaw()).rules;
+  await assert.rejects(
+    store.saveRules([
+      {
+        id: 'invalid',
+        enabled: true,
+        when: {anySource: true},
+        then: [{action: 'missing'}],
+      },
+    ]),
+    /unknown action/u,
+  );
+  assert.equal((await store.loadRaw()).rules, beforeInvalid);
+
+  await store.restore('endpoints', revisions[0].id);
+  assert.equal((await store.load()).endpoints.httpServers.length, 0);
+  const protectedApp = (await store.loadRaw()).app;
+  assert.equal(protectedApp.includes('private-test-token'), false);
+  assert.equal(protectedApp.includes('${secret:apiToken}'), true);
+});
+
+async function writeJson(file, value) {
+  await writeFile(file, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+}
