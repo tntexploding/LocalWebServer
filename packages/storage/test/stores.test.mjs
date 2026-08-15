@@ -67,9 +67,12 @@ test('migrates, versions, validates, restores, and redacts config files', async 
         allowedApiSources: ['127.0.0.1', '::1'],
         corsOrigins: [],
         allowedCommandRoots: [],
+        allowedExecutables: [],
+        commandEnvironmentAllowlist: [],
         allowShell: false,
       },
-      automation: {maxConcurrentActions: 2},
+      network: testNetworkConfig(),
+      automation: {maxConcurrentActions: 2, maxActionOutputBytes: 1048576},
       storage: {
         eventLogPath: 'data/events.jsonl',
         runLogPath: 'data/runs.jsonl',
@@ -86,19 +89,22 @@ test('migrates, versions, validates, restores, and redacts config files', async 
     writeJson(path.join(configDir, 'actions.yaml'), {actions: []}),
     writeJson(path.join(configDir, 'secrets.yaml'), {
       version: 1,
-      secrets: {apiToken: 'private-test-token'},
+      secrets: {apiToken: 'test-private-token-0000000000000000000'},
     }),
   ]);
   const store = new ConfigStore(root);
   const loaded = await store.load();
   assert.equal(loaded.app.version, 1);
-  assert.equal(loaded.app.security.apiToken, 'private-test-token');
+  assert.equal(
+    loaded.app.security.apiToken,
+    'test-private-token-0000000000000000000',
+  );
   assert.equal(store.redact(loaded).app.security.apiToken, '[REDACTED]');
   assert.deepEqual(
     store.redact({
       body: {
         token: 'arbitrary-value',
-        detail: 'prefix-private-test-token-suffix',
+        detail: 'prefix-test-private-token-0000000000000000000-suffix',
       },
     }),
     {
@@ -137,13 +143,53 @@ test('migrates, versions, validates, restores, and redacts config files', async 
   );
   assert.equal((await store.loadRaw()).rules, beforeInvalid);
 
+  const beforeInlineSecret = (await store.loadRaw()).app;
+  await assert.rejects(
+    store.saveRaw(
+      'app',
+      beforeInlineSecret.replace(
+        '${secret:apiToken}',
+        'inline-credential-value',
+      ),
+    ),
+    /must use a \$\{secret:name\}/u,
+  );
+  assert.equal((await store.loadRaw()).app, beforeInlineSecret);
+
   await store.restore('endpoints', revisions[0].id);
   assert.equal((await store.load()).endpoints.httpServers.length, 0);
   const protectedApp = (await store.loadRaw()).app;
-  assert.equal(protectedApp.includes('private-test-token'), false);
+  assert.equal(
+    protectedApp.includes('test-private-token-0000000000000000000'),
+    false,
+  );
   assert.equal(protectedApp.includes('${secret:apiToken}'), true);
 });
 
 async function writeJson(file, value) {
   await writeFile(file, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+}
+
+function testNetworkConfig() {
+  return {
+    inbound: {
+      allowedSources: ['127.0.0.1', '::1'],
+      allowedOrigins: [],
+      maxHttpBodyBytes: 1048576,
+      maxWebSocketMessageBytes: 1048576,
+      maxWebSocketConnectionsPerEndpoint: 16,
+      requestTimeoutMs: 15000,
+      headersTimeoutMs: 10000,
+      keepAliveTimeoutMs: 5000,
+      maxHeadersCount: 100,
+    },
+    outbound: {
+      allowedHostnames: ['localhost'],
+      allowedAddresses: ['loopback'],
+      allowedPorts: [4789],
+      maxHttpRequestBytes: 1048576,
+      maxHttpResponseBytes: 1048576,
+      maxWebSocketMessageBytes: 1048576,
+    },
+  };
 }

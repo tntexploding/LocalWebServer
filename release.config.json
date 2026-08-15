@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "minimumNodeVersion": "24.18.1",
+  "supportedNodeMajor": 24,
+  "runtime": {
+    "version": "24.18.1",
+    "platform": "win-x64",
+    "downloadBaseUrl": "https://nodejs.org/dist",
+    "archive": "node-v24.18.1-win-x64.zip",
+    "sha256": "ec56b84a7551893ab2324ebdfdc4ab974a63b4781162600b68a1293cc3e53765"
+  }
+}

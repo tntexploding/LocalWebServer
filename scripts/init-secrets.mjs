@@ -46,15 +46,27 @@ console.log('Separated API credentials into config/secrets.yaml.');
 
 function moveToken(security, secrets, name) {
   const current = security[name];
-  if (typeof current === 'string' && !current.startsWith('${')) {
+  if (
+    typeof current === 'string' &&
+    !current.startsWith('${') &&
+    !isUnsafeToken(current)
+  ) {
     secrets[name] = current;
   }
-  if (typeof secrets[name] !== 'string' || secrets[name].length === 0) {
+  if (isUnsafeToken(secrets[name])) {
     secrets[name] = randomBytes(32).toString('base64url');
   }
   if (typeof current !== 'string' || !current.startsWith('${env:')) {
     security[name] = `\${secret:${name}}`;
   }
+}
+
+function isUnsafeToken(value) {
+  return (
+    typeof value !== 'string' ||
+    value.length < 32 ||
+    /^(?:change|example|replace|test)[-_]/iu.test(value)
+  );
 }
 
 async function writeAtomically(filePath, content, mode) {

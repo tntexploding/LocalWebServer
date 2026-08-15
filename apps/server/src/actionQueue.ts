@@ -6,6 +6,7 @@ import type {
   WorkflowExpressionContext,
 } from '@las/core';
 import type {JsonlStore} from '@las/storage';
+import {safeNetworkTarget} from './networkPolicy.js';
 import type {ActionExecutor} from './actionExecutor.js';
 
 interface QueueItem {
@@ -253,8 +254,12 @@ export function failedRun(
 }
 
 function actionTarget(action: ActionConfig): string {
-  if (action.type === 'send_http') return action.url;
-  if (action.type === 'send_ws') return action.target;
+  if (action.type === 'send_http') return safeNetworkTarget(action.url);
+  if (action.type === 'send_ws') {
+    return /^wss?:\/\//u.test(action.target)
+      ? safeNetworkTarget(action.target)
+      : action.target;
+  }
   if (action.type === 'command' || action.type === 'script') return action.cwd;
   if (action.type === 'wait_event') return action.source ?? '*';
   return action.title;

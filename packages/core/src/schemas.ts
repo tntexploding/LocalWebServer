@@ -348,6 +348,22 @@ function addExpressionIssues(value: unknown, context: z.RefinementCtx): void {
   }
 }
 
+const browserOriginSchema = z
+  .string()
+  .url()
+  .refine(
+    value => {
+      const parsed = new URL(value);
+      return (
+        ['http:', 'https:'].includes(parsed.protocol) &&
+        parsed.origin === value &&
+        !parsed.username &&
+        !parsed.password
+      );
+    },
+    {message: 'Expected an exact HTTP(S) origin without path or credentials.'},
+  );
+
 /** Validates application runtime, security, automation, and storage settings. */
 export const appConfigSchema = z.object({
   version: z.literal(1).default(1),
@@ -356,18 +372,63 @@ export const appConfigSchema = z.object({
     port: z.number().int().min(1).max(65535),
     webSocketPath: z.string().startsWith('/'),
   }),
-  security: z.object({
-    apiToken: z.string().min(1),
-    operatorToken: z.string().min(1).optional(),
-    readToken: z.string().min(1).optional(),
-    requireTokenForRead: z.boolean(),
-    allowedApiSources: z.array(z.string().min(1)).min(1),
-    corsOrigins: z.array(z.string().min(1)),
-    allowedCommandRoots: z.array(z.string()),
-    allowShell: z.boolean(),
+  security: z
+    .object({
+      apiToken: z.string().min(32),
+      operatorToken: z.string().min(32).optional(),
+      readToken: z.string().min(32).optional(),
+      requireTokenForRead: z.boolean(),
+      allowedApiSources: z.array(z.string().min(1)).min(1),
+      corsOrigins: z.array(browserOriginSchema),
+      allowedCommandRoots: z.array(z.string()),
+      allowedExecutables: z.array(z.string().min(1)),
+      commandEnvironmentAllowlist: z.array(
+        z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/u),
+      ),
+      allowShell: z.literal(false),
+    })
+    .superRefine((security, context) => {
+      const tokens = [
+        ['apiToken', security.apiToken],
+        ['operatorToken', security.operatorToken],
+        ['readToken', security.readToken],
+      ].filter((entry): entry is [string, string] => Boolean(entry[1]));
+      for (let left = 0; left < tokens.length; left += 1) {
+        for (let right = left + 1; right < tokens.length; right += 1) {
+          if (tokens[left][1] === tokens[right][1]) {
+            context.addIssue({
+              code: 'custom',
+              path: [tokens[right][0]],
+              message: 'Control API role tokens must be distinct.',
+            });
+          }
+        }
+      }
+    }),
+  network: z.object({
+    inbound: z.object({
+      allowedSources: z.array(z.string().min(1)).min(1),
+      allowedOrigins: z.array(browserOriginSchema),
+      maxHttpBodyBytes: z.number().int().min(1024).max(104857600),
+      maxWebSocketMessageBytes: z.number().int().min(1024).max(104857600),
+      maxWebSocketConnectionsPerEndpoint: z.number().int().min(1).max(1024),
+      requestTimeoutMs: z.number().int().min(1000).max(300000),
+      headersTimeoutMs: z.number().int().min(1000).max(300000),
+      keepAliveTimeoutMs: z.number().int().min(1000).max(300000),
+      maxHeadersCount: z.number().int().min(10).max(1000),
+    }),
+    outbound: z.object({
+      allowedHostnames: z.array(z.string().min(1)),
+      allowedAddresses: z.array(z.string().min(1)),
+      allowedPorts: z.array(z.number().int().min(1).max(65535)),
+      maxHttpRequestBytes: z.number().int().min(1024).max(104857600),
+      maxHttpResponseBytes: z.number().int().min(1024).max(104857600),
+      maxWebSocketMessageBytes: z.number().int().min(1024).max(104857600),
+    }),
   }),
   automation: z.object({
     maxConcurrentActions: z.number().int().min(1).max(16),
+    maxActionOutputBytes: z.number().int().min(1024).max(104857600),
   }),
   storage: z.object({
     eventLogPath: z.string().min(1),

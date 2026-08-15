@@ -1,41 +1,83 @@
 # 安全说明
 
-## 使用范围
+## 安全模型
 
-本项目按本地可信环境设计。不要直接把控制 API 或未鉴权的业务端点暴露到公网。需要跨主机访问时，应使用防火墙、可信内网或具备 TLS 和访问控制的反向代理。`allowedApiSources` 只保护 `/api/*` 控制面；业务端点是否可访问仍由端点监听地址、防火墙和上游鉴权决定。
+本项目是本地优先的自动化网关，不是可直接暴露到公网的多租户服务。默认信任边界是当前
+Windows 用户和显式加入白名单的本机/局域网地址。控制 API、业务 HTTP/WS 端点、外发
+目标、配置文件、消息内容以及本地命令分别经过独立限制。
 
-## 必须检查的设置
+程序自身不终止 TLS。跨主机传输令牌、消息或日志时，必须使用可信 VPN，或在前方部署
+具备 TLS、访问控制和请求限制的反向代理；同时仍应保留程序内的来源白名单。不要把控制
+API 或未鉴权的业务端点直接暴露到公网。
 
-- 运行 `npm run secrets:init`，不要把令牌明文保存在普通配置中。
-- 将 `allowedApiSources` 限制为需要访问控制 API 的精确地址或 CIDR。
-- 将 `corsOrigins` 限制为实际使用的 WebUI 来源，不使用通配浏览器来源。
-- 跨主机读取日志时启用 `requireTokenForRead`。
-- 保持 `allowShell: false`，除非动作确实需要 Shell 语法。
-- 将 `allowedCommandRoots` 缩小到动作所需的具体目录。
-- 检查 HTTP 客户端的目标 URL 和自定义请求头，避免令牌发送到错误主机。
-- 仅启用实际使用的服务端和客户端。
-- 不在消息模板、日志或版本库中保存密码、Cookie 和长期令牌。
+## 启动前检查
 
-本机 `config/*.yaml`、`config/templates/`、`doc/template/`、`.env*`、包管理器凭据、证书私钥和运行数据均由 `.gitignore` 排除。仓库只保存不含真实令牌和私有路径、且默认禁用的 `config/*.example.yaml`。`npm run audit:repo` 会在提交前再次检查该边界和常见凭据模式。
+- 使用 Node.js 24.18.1 至 24.x。便携包固定使用 `release.config.json` 指定并校验的版本。
+- 运行 `npm run secrets:init`，让普通配置仅保存 `${secret:name}` 或 `${env:NAME}` 引用。
+- 三个控制令牌至少 32 字符且互不相同；不要继续使用 `replace-*` 一类示例值。
+- 将 `security.allowedApiSources` 与 `network.inbound.allowedSources` 缩小到精确 IP、CIDR 或 `loopback`。
+- 将 `security.corsOrigins` 与 `network.inbound.allowedOrigins` 限制为实际浏览器来源，不使用通配来源。
+- 只允许确切的外发主机、IP/CIDR 和端口。默认配置只允许回环地址及列出的本机端口。
+- `security.allowShell` 必须保持 `false`；命令使用绝对可执行文件路径和最小工作目录白名单。
+- 仅启用正在使用的端点、动作和自动化流程，并使用主机防火墙限制监听端口。
 
 ## 控制 API
 
-控制 API 使用三个逐级授权角色：`readToken` 仅查询，`operatorToken` 可运行、发送、重放和取消，`apiToken` 可修改或恢复配置。所有角色均通过 `x-las-token` 发送。来源白名单先于令牌检查；浏览器还必须匹配 `corsOrigins`。`GET /api/health` 不要求令牌，但仍受来源白名单保护。
+`/api/*` 先检查来源地址和浏览器 Origin，再按角色验证 `x-las-token`：`readToken` 只读，
+`operatorToken` 可执行、发送、重放和取消，`apiToken` 可修改与恢复配置。`GET /api/health`
+无需令牌，但仍受来源与 Origin 策略保护。令牌比较采用固定长度摘要和时序安全比较。
 
-WebUI 输入的控制令牌只保存在 `sessionStorage`，关闭浏览器会话后即失效；升级时会把旧版本遗留在 `localStorage` 的令牌迁移到当前会话并立即删除持久副本。
+WebUI 仅把令牌保存在 `sessionStorage`。旧版本留在 `localStorage` 的令牌会迁移到当前会话
+并删除持久副本。控制 API 的 500 响应不返回内部异常原文；拒绝和受保护操作写入
+`data/security-audit.jsonl`，但不记录令牌或正文。
 
-被拒绝的请求和受保护的操作会写入 `data/security-audit.jsonl`，只记录时间、来源、方法、路径、角色、结果和状态码，不记录令牌或请求正文。
+## HTTP 与 WebSocket
 
-## 命令动作
+业务端点统一执行来源和 Origin 白名单、正文/消息大小限制、请求/请求头超时、最大请求头
+数量和 WS 连接数限制。外发 HTTP/WS 只接受显式允许的协议、精确主机或地址及端口，拒绝
+URL 内嵌用户名/密码；HTTP 不自动跟随重定向，请求与响应均有大小上限。目标 URL 写入日志
+前会删除凭据、查询值和片段。
 
-外部消息不能直接提供命令，但可以触发 `config/actions.yaml` 中的预定义命令。命令参数仍应视为高风险配置：不要把未经校验的消息字段拼接进 Shell 字符串，也不要把允许目录设置为整个磁盘。
+允许公共 DNS 主机时，程序会先解析并拒绝指向回环、私网、链路本地、保留或组播地址的
+结果。但底层 HTTP/WS 客户端仍会再次解析域名，因此不能把域名白名单当作抵御恶意 DNS
+重绑定的绝对边界。高安全本地链路应使用固定 IP/CIDR、可信 DNS 或出口防火墙。
 
-## 日志数据
+## 本地动作
 
-`data/events.jsonl` 和 `data/runs.jsonl` 可能包含消息正文、远端地址和命令输出。持久化前会递归遮罩已知密钥值和名称中包含密码、令牌、Cookie、Authorization、API Key 或私钥的字段，HTTP 入站请求头和 Fastify 控制台日志也应用遮罩；无法识别的业务正文仍应视为敏感数据。该目录已从版本控制中排除，但仍应根据数据敏感度设置文件权限和保留周期。
+外部消息只能触发已经保存的动作，不能直接指定命令、解释器、脚本或工作目录。命令与
+脚本字段禁止工作流表达式；可执行文件必须是绝对路径并位于 `allowedExecutables`，工作
+目录和脚本经过 `realpath` 后必须位于 `allowedCommandRoots`。子进程始终使用
+`shell: false`，只继承 `commandEnvironmentAllowlist` 中的环境变量，且输出、超时和并发
+均受限制。
 
-便携包只包含构建产物、运行时、脱敏示例和说明文件，不复制实际配置、消息模板、协议样例、密钥、历史或日志。发布前仍应检查 `release/` 内容。
+预先授权的命令本身仍拥有当前 Windows 用户的权限。不要允许整个磁盘、通用 Shell 或可被
+低权限用户修改的脚本目录；不要把未经验证的消息内容作为命令参数。需要更强隔离时，应把
+服务运行在专用低权限账户、容器或虚拟机中。
+
+## 配置、密钥与日志
+
+实际 `config/*.yaml`、`config/templates/`、`doc/template/`、`.env*`、包管理器凭据、证书
+私钥、`data/` 与 `release/` 均被 Git 忽略。原始配置保存会拒绝敏感字段中的明文，以及
+敏感 URL 查询参数中的明文；结构化保存会把已知值重新保护为引用。配置与状态写入使用
+同目录临时文件和原子重命名，配置历史带 SHA-256 完整性摘要，受管路径不得逃出运行根目录。
+
+事件和运行日志可能包含业务正文、远端地址与命令输出。已知密钥值、敏感字段名和认证请求
+头会被遮罩，但无法识别的业务数据仍应视为敏感信息。请使用合适的 NTFS 权限，并按
+`maxLogBytes`、`maxLogFiles` 和组织策略控制保留周期。
+
+## 依赖与发布
+
+`npm run audit:lock` 离线验证生产依赖来自官方 npm HTTPS 注册表、具有 SHA-512 完整性、
+使用允许的许可证且不带生产安装脚本。`npm run audit:dependencies` 执行 npm 漏洞查询与
+签名/来源证明验证。`npm run audit:repo` 扫描当前候选文件、Git 历史路径和补丁中的常见
+凭据模式；模式扫描降低误提交风险，但不能证明不存在所有秘密。
+
+便携包从 Node.js 官方地址下载固定运行时并核对 SHA-256，使用
+`npm ci --omit=dev --ignore-scripts` 安装锁定依赖，随后执行生产依赖审计和签名验证。发行物
+包含 CycloneDX SBOM、逐文件 `MANIFEST.sha256`、发布元数据和压缩包外部 SHA-256，不包含
+实际配置、消息模板、私有协议样例、密钥、日志或测试工程。详见 [发布流程](doc/release.md)。
 
 ## 漏洞报告
 
-发现安全问题时，请不要在包含真实令牌、消息或本机路径的公开 issue 中披露。应先向项目维护者私下提供复现步骤、影响范围和建议修复方式。
+发现安全问题时，请不要在包含真实令牌、消息或本机路径的公开 issue 中披露。应先向项目
+维护者私下提供复现步骤、影响范围、受影响版本和建议修复方式。

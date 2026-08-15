@@ -213,6 +213,7 @@ function validateReferences(
     );
   }
   for (const [index, action] of config.actions.entries()) {
+    validateProtectedLocalFields(action, `actions[${index}]`, issues);
     if (action.type === 'send_http') {
       validateTemplate(
         action.template,
@@ -279,6 +280,7 @@ function validateReferences(
         );
       }
       if (node.type !== 'action') continue;
+      validateProtectedLocalFields(node.action, `${nodePath}.action`, issues);
       if (
         node.action.type === 'reference' &&
         !actionIds.has(node.action.actionId)
@@ -330,6 +332,35 @@ function validateReferences(
           issues,
         );
       }
+    }
+  }
+}
+
+function validateProtectedLocalFields(
+  action: {
+    type: string;
+    cwd?: string;
+    command?: string;
+    interpreter?: string;
+    script?: string;
+  },
+  path: string,
+  issues: ConfigValidationIssue[],
+): void {
+  const protectedFields =
+    action.type === 'command'
+      ? (['cwd', 'command'] as const)
+      : action.type === 'script'
+        ? (['cwd', 'interpreter', 'script'] as const)
+        : [];
+  for (const field of protectedFields) {
+    const value = action[field];
+    if (value && containsWorkflowExpression(value)) {
+      issues.push({
+        code: 'unsafe_expression',
+        path: `${path}.${field}`,
+        message: `Workflow expressions are not allowed in local execution field "${field}".`,
+      });
     }
   }
 }

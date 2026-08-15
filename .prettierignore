@@ -1,6 +1,7 @@
 .agents/
 .codex/
 .npm-cache/
+.release-cache/
 custom/
 config/**
 !config/README.md

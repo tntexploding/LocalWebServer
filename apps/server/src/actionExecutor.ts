@@ -1,5 +1,6 @@
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
+import {realpath} from 'node:fs/promises';
 import {execa} from 'execa';
 import {
   actionConfigSchema,
@@ -15,6 +16,11 @@ import {
 import type {MessageTemplateDecoder} from './messageTemplateDecoder.js';
 import type {EventWaitBroker} from './eventWaitBroker.js';
 import type {InteractionBroker} from './interactionBroker.js';
+import {
+  NetworkPolicy,
+  readLimitedResponseText,
+  safeNetworkTarget,
+} from './networkPolicy.js';
 
 /** Sends a payload through a configured WebSocket target. */
 export type WsSender = (
@@ -28,11 +34,13 @@ export class ActionExecutor {
   private readonly running = new Set<string>();
 
   constructor(
-    private readonly appConfig: AppConfig,
+    private readonly getAppConfig: () => AppConfig,
     private readonly sendWs: WsSender,
     private readonly messageTemplates: MessageTemplateDecoder,
     private readonly interactions: InteractionBroker,
     private readonly eventWaits: EventWaitBroker,
+    private readonly networkPolicy: NetworkPolicy,
+    private readonly rootDir: string,
   ) {}
 
   async execute(
@@ -123,32 +131,36 @@ export class ActionExecutor {
         throw new Error(`Action "${action.id}" is already running.`);
       }
 
-      this.assertAllowedCwd(action.cwd);
+      const appConfig = this.getAppConfig();
+      const cwd = await this.assertAllowedPath(action.cwd, 'Command cwd');
       this.running.add(action.id);
       try {
-        const command =
+        const configuredCommand =
           action.type === 'command' ? action.command : action.interpreter;
+        const command = await this.assertAllowedExecutable(configuredCommand);
         const args =
           action.type === 'command'
             ? (action.args ?? [])
-            : [action.script, ...(action.args ?? [])];
+            : [
+                await this.assertAllowedPath(action.script, 'Script file', cwd),
+                ...(action.args ?? []),
+              ];
         const result = await execa(command, args, {
-          cwd: action.cwd,
-          shell: this.appConfig.security.allowShell,
+          cwd,
+          shell: false,
           timeout: action.timeoutMs ?? 30000,
           cancelSignal: signal,
-          env: {
-            LAS_EVENT_ID: event.id,
-            LAS_EVENT_SOURCE: event.source,
-            LAS_EVENT_KIND: event.kind,
-          },
+          maxBuffer: appConfig.automation.maxActionOutputBytes,
+          extendEnv: false,
+          env: commandEnvironment(appConfig, event),
+          windowsHide: true,
         });
         return {
           output: [result.stdout, result.stderr].filter(Boolean).join('\n'),
           detail: {
             direction: 'local',
             protocol: action.type,
-            cwd: action.cwd,
+            cwd,
             command,
             args,
           },
@@ -210,6 +222,7 @@ export class ActionExecutor {
     }
 
     if (action.type === 'send_http') {
+      await this.networkPolicy.assertHttpUrl(action.url);
       const requestBody = action.template
         ? await this.messageTemplates.materialize(
             action.template,
@@ -230,6 +243,11 @@ export class ActionExecutor {
       ) {
         headers['content-type'] = 'application/json';
       }
+      const encodedBody =
+        requestBody === undefined || action.method === 'GET'
+          ? undefined
+          : JSON.stringify(requestBody);
+      this.networkPolicy.assertHttpRequestSize(encodedBody);
       const attempted = await runWithRetry(
         action.retry,
         signal,
@@ -239,20 +257,21 @@ export class ActionExecutor {
             {
               method: action.method,
               headers,
-              body:
-                requestBody === undefined || action.method === 'GET'
-                  ? undefined
-                  : JSON.stringify(requestBody),
+              body: encodedBody,
+              redirect: 'manual',
             },
             action.timeoutMs ?? 15000,
             signal,
           );
-          const responseBody = (await response.text()).slice(0, 2000);
+          const responseBody = await readLimitedResponseText(
+            response,
+            this.getAppConfig().network.outbound.maxHttpResponseBytes,
+          );
           const detail = {
             direction: 'outbound',
             protocol: 'http',
             method: action.method,
-            url: action.url,
+            url: safeNetworkTarget(action.url),
             requestBody,
             template: action.template,
             statusCode: response.status,
@@ -279,16 +298,18 @@ export class ActionExecutor {
       action.retry,
       signal,
       async attempt => {
-        await this.sendWs(action.target, buildWsPayload(action, event), {
+        const payload = buildWsPayload(action, event);
+        this.networkPolicy.assertWebSocketMessageSize(JSON.stringify(payload));
+        await this.sendWs(action.target, payload, {
           timeoutMs: action.timeoutMs ?? 10000,
           signal,
         });
         return {
-          output: `Sent WebSocket message to ${action.target}`,
+          output: `Sent WebSocket message to ${safeWsTarget(action.target)}`,
           detail: {
             direction: 'outbound',
             protocol: 'ws',
-            target: action.target,
+            target: safeWsTarget(action.target),
             body: action.body,
             attempt,
           },
@@ -301,21 +322,40 @@ export class ActionExecutor {
     };
   }
 
-  private assertAllowedCwd(cwd: string): void {
-    const normalizedCwd = path.resolve(cwd).toLowerCase();
-    const roots = this.appConfig.security.allowedCommandRoots.map(root =>
-      path.resolve(root).toLowerCase(),
+  private async assertAllowedPath(
+    value: string,
+    label: string,
+    basePath = this.rootDir,
+  ): Promise<string> {
+    const resolved = await realpath(path.resolve(basePath, value));
+    const roots = await Promise.all(
+      this.getAppConfig().security.allowedCommandRoots.map(root =>
+        realpath(path.resolve(this.rootDir, root)),
+      ),
     );
-
-    if (
-      !roots.some(
-        root =>
-          normalizedCwd === root ||
-          normalizedCwd.startsWith(`${root}${path.sep}`),
-      )
-    ) {
-      throw new Error(`Command cwd is outside allowed roots: ${cwd}`);
+    if (!roots.some(root => pathContains(root, resolved))) {
+      throw new Error(`${label} is outside allowed roots: ${value}`);
     }
+    return resolved;
+  }
+
+  private async assertAllowedExecutable(value: string): Promise<string> {
+    if (!path.isAbsolute(value)) {
+      throw new Error(`Executable path must be absolute: ${value}`);
+    }
+    const resolved = await realpath(value);
+    const configured = this.getAppConfig().security.allowedExecutables;
+    const relativeEntry = configured.find(item => !path.isAbsolute(item));
+    if (relativeEntry) {
+      throw new Error(
+        `Allowlisted executable paths must be absolute: ${relativeEntry}`,
+      );
+    }
+    const allowed = await Promise.all(configured.map(item => realpath(item)));
+    if (!allowed.some(item => samePath(item, resolved))) {
+      throw new Error(`Executable is not allowlisted: ${value}`);
+    }
+    return resolved;
   }
 }
 
@@ -446,11 +486,51 @@ function hasHeader(
 }
 
 function actionTarget(action: ActionConfig): string {
-  if (action.type === 'send_http') return action.url;
-  if (action.type === 'send_ws') return action.target;
+  if (action.type === 'send_http') return safeNetworkTarget(action.url);
+  if (action.type === 'send_ws') return safeWsTarget(action.target);
   if (action.type === 'command' || action.type === 'script') return action.cwd;
   if (action.type === 'wait_event') return action.source ?? '*';
   return action.title;
+}
+
+function safeWsTarget(value: string): string {
+  return /^wss?:\/\//u.test(value) ? safeNetworkTarget(value) : value;
+}
+
+function commandEnvironment(
+  appConfig: AppConfig,
+  event: EventEnvelope,
+): Record<string, string> {
+  const selected: Record<string, string> = {};
+  for (const requested of appConfig.security.commandEnvironmentAllowlist) {
+    const actual = Object.keys(process.env).find(name =>
+      process.platform === 'win32'
+        ? name.toLowerCase() === requested.toLowerCase()
+        : name === requested,
+    );
+    const value = actual ? process.env[actual] : undefined;
+    if (actual && value !== undefined) selected[actual] = value;
+  }
+  return {
+    ...selected,
+    LAS_EVENT_ID: event.id,
+    LAS_EVENT_SOURCE: event.source,
+    LAS_EVENT_KIND: event.kind,
+  };
+}
+
+function pathContains(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return (
+    relative === '' ||
+    (!relative.startsWith('..') && !path.isAbsolute(relative))
+  );
+}
+
+function samePath(left: string, right: string): boolean {
+  return process.platform === 'win32'
+    ? left.toLowerCase() === right.toLowerCase()
+    : left === right;
 }
 
 function buildWsPayload(

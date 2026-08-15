@@ -7,6 +7,11 @@ import {
 } from 'node:http';
 import {WebSocket, WebSocketServer} from 'ws';
 import type {AppConfig, EndpointsConfig} from '@las/core';
+import {
+  NetworkPolicy,
+  NetworkPolicyError,
+  safeNetworkTarget,
+} from './networkPolicy.js';
 
 type HttpServerEndpoint = EndpointsConfig['httpServers'][number] & {
   host: string;
@@ -98,6 +103,7 @@ export class EndpointListenerManager {
     appServer: AppConfig['server'],
     private readonly onHttpEvent: (input: HttpEventInput) => Promise<unknown>,
     private readonly onWsEvent: (input: WsEventInput) => Promise<void>,
+    private readonly networkPolicy: NetworkPolicy,
     private readonly onError: (error: unknown, context: string) => void = () =>
       undefined,
   ) {
@@ -106,6 +112,10 @@ export class EndpointListenerManager {
 
   listenForControlUpgrades(): void {
     this.controlServer.on('upgrade', (request, socket, head) => {
+      if (!this.isUpgradeAllowed(request)) {
+        rejectUpgrade(socket);
+        return;
+      }
       const pathname = new URL(request.url ?? '/', 'http://localhost').pathname;
       const wsServer = this.controlWsRoutes.get(pathname);
 
@@ -124,6 +134,13 @@ export class EndpointListenerManager {
     endpoints: EndpointsConfig,
     appServer: AppConfig['server'],
   ): Promise<void> {
+    await Promise.all(
+      endpoints.wsClients
+        .filter(endpoint => endpoint.enabled)
+        .map(endpoint =>
+          this.networkPolicy.assertConfiguredWebSocketUrl(endpoint.url),
+        ),
+    );
     this.appServer = appServer;
     await this.clear();
     const generation = this.generation;
@@ -198,6 +215,22 @@ export class EndpointListenerManager {
     if (!endpoint) {
       return null;
     }
+    if (!this.networkPolicy.isInboundSourceAllowed(input.remoteAddress)) {
+      return {
+        statusCode: 403,
+        body: {error: 'Endpoint source is not allowed.'},
+      };
+    }
+    if (
+      !this.networkPolicy.isInboundOriginAllowed(
+        firstHeaderValue(input.headers.origin),
+      )
+    ) {
+      return {
+        statusCode: 403,
+        body: {error: 'Endpoint origin is not allowed.'},
+      };
+    }
     return this.handleHttpEndpoint(endpoint, input);
   }
 
@@ -207,6 +240,7 @@ export class EndpointListenerManager {
     options: {timeoutMs?: number; signal?: AbortSignal} = {},
   ): Promise<void> {
     const encoded = JSON.stringify(payload);
+    this.networkPolicy.assertWebSocketMessageSize(encoded);
     const connectedClients = [...(this.clients.get(target) ?? [])].filter(
       client => client.readyState === WebSocket.OPEN,
     );
@@ -232,7 +266,13 @@ export class EndpointListenerManager {
 
     const outboundUrl = directWsUrl(target);
     if (!outboundUrl) throw new Error(`Unknown WebSocket target: ${target}`);
-    await sendWebSocket(outboundUrl, encoded, options);
+    await this.networkPolicy.assertWebSocketUrl(outboundUrl);
+    await sendWebSocket(
+      outboundUrl,
+      encoded,
+      options,
+      this.networkPolicy.outboundLimits().maxWebSocketMessageBytes,
+    );
   }
 
   wsStatus(): WsConnectionStatus[] {
@@ -255,7 +295,7 @@ export class EndpointListenerManager {
         role: 'client',
         clients: connection.status === 'open' ? 1 : 0,
         state: connection.status,
-        url: connection.endpoint.url,
+        url: safeNetworkTarget(connection.endpoint.url),
         reconnectAttempt: connection.reconnectAttempt,
         lastConnectedAt: connection.lastConnectedAt,
         lastMessageAt: connection.lastMessageAt,
@@ -329,10 +369,22 @@ export class EndpointListenerManager {
   }
 
   private createWsServer(endpoint: WsServerEndpoint): WebSocketServer {
-    const wsServer = new WebSocketServer({noServer: true});
+    const wsServer = new WebSocketServer({
+      noServer: true,
+      maxPayload: this.networkPolicy.inboundLimits().maxWebSocketMessageBytes,
+    });
     this.clients.set(endpoint.id, new Set());
     wsServer.on('connection', (socket, request) => {
-      this.clients.get(endpoint.id)?.add(socket);
+      const clients = this.clients.get(endpoint.id);
+      if (
+        !clients ||
+        clients.size >=
+          this.networkPolicy.inboundLimits().maxWebSocketConnectionsPerEndpoint
+      ) {
+        socket.close(1013, 'Connection limit reached.');
+        return;
+      }
+      clients.add(socket);
       socket.on('close', () => this.clients.get(endpoint.id)?.delete(socket));
       socket.on('message', data => {
         void this.onWsEvent({
@@ -359,10 +411,12 @@ export class EndpointListenerManager {
       waiters: new Set(),
     };
     this.outboundWs.set(endpoint.id, connection);
-    this.connectOutbound(connection);
+    void this.connectOutbound(connection);
   }
 
-  private connectOutbound(connection: OutboundWsConnection): void {
+  private async connectOutbound(
+    connection: OutboundWsConnection,
+  ): Promise<void> {
     if (
       connection.generation !== this.generation ||
       connection.socket?.readyState === WebSocket.OPEN ||
@@ -376,7 +430,21 @@ export class EndpointListenerManager {
     }
     connection.status =
       connection.reconnectAttempt > 0 ? 'reconnecting' : 'connecting';
-    const socket = new WebSocket(connection.endpoint.url);
+    try {
+      await this.networkPolicy.assertWebSocketUrl(connection.endpoint.url);
+    } catch (error) {
+      connection.status = 'error';
+      connection.lastError = errorMessage(error);
+      this.onError(error, `ws.client.${connection.endpoint.id}`);
+      this.rejectOutboundWaiters(connection, asError(error));
+      if (!(error instanceof NetworkPolicyError)) {
+        this.scheduleReconnect(connection);
+      }
+      return;
+    }
+    const socket = new WebSocket(connection.endpoint.url, {
+      maxPayload: this.networkPolicy.outboundLimits().maxWebSocketMessageBytes,
+    });
     connection.socket = socket;
 
     socket.on('open', () => {
@@ -438,7 +506,7 @@ export class EndpointListenerManager {
         reconnect.backoffMultiplier ** (connection.reconnectAttempt - 1),
     );
     connection.reconnectTimer = setTimeout(
-      () => this.connectOutbound(connection),
+      () => void this.connectOutbound(connection),
       delay,
     );
     connection.reconnectTimer.unref();
@@ -485,7 +553,7 @@ export class EndpointListenerManager {
   ): Promise<void> {
     if (connection.socket?.readyState === WebSocket.OPEN) return;
     options.signal?.throwIfAborted();
-    this.connectOutbound(connection);
+    void this.connectOutbound(connection);
     const timeoutMs = options.timeoutMs ?? 10000;
     await new Promise<void>((resolve, reject) => {
       const waiter: OutboundWsWaiter = {
@@ -535,13 +603,28 @@ export class EndpointListenerManager {
       void this.handleRawHttp(group, request, response).catch(error => {
         this.onError(error, `http.listener.${group.key}`);
         if (!response.headersSent) {
-          writeJson(response, 500, {error: errorMessage(error)});
+          const statusCode = requestErrorStatus(error);
+          writeJson(response, statusCode, {
+            error:
+              statusCode >= 500
+                ? 'Endpoint processing failed.'
+                : errorMessage(error),
+          });
         } else {
           response.destroy(error instanceof Error ? error : undefined);
         }
       });
     });
+    const inbound = this.networkPolicy.inboundLimits();
+    server.requestTimeout = inbound.requestTimeoutMs;
+    server.headersTimeout = inbound.headersTimeoutMs;
+    server.keepAliveTimeout = inbound.keepAliveTimeoutMs;
+    server.maxHeadersCount = inbound.maxHeadersCount;
     server.on('upgrade', (request, socket, head) => {
+      if (!this.isUpgradeAllowed(request)) {
+        rejectUpgrade(socket);
+        return;
+      }
       const pathname = new URL(request.url ?? '/', 'http://localhost').pathname;
       const wsServer = group.wsRoutes.get(pathname);
       if (!wsServer) {
@@ -568,21 +651,34 @@ export class EndpointListenerManager {
     request: IncomingMessage,
     response: ServerResponse,
   ): Promise<void> {
-    setCorsHeaders(response);
-    if (request.method === 'OPTIONS') {
-      response.writeHead(204);
-      response.end();
-      return;
-    }
-
     const pathname = new URL(request.url ?? '/', 'http://localhost').pathname;
     const endpoint = group.httpRoutes.get(pathname);
     if (!endpoint) {
       writeJson(response, 404, {error: 'Unknown endpoint path.'});
       return;
     }
+    if (
+      !this.networkPolicy.isInboundSourceAllowed(request.socket.remoteAddress)
+    ) {
+      writeJson(response, 403, {error: 'Endpoint source is not allowed.'});
+      return;
+    }
+    const origin = firstHeaderValue(request.headers.origin);
+    if (!this.networkPolicy.isInboundOriginAllowed(origin)) {
+      writeJson(response, 403, {error: 'Endpoint origin is not allowed.'});
+      return;
+    }
+    setCorsHeaders(response, origin);
+    if (request.method === 'OPTIONS') {
+      response.writeHead(204);
+      response.end();
+      return;
+    }
 
-    const body = await readBody(request);
+    const body = await readBody(
+      request,
+      this.networkPolicy.inboundLimits().maxHttpBodyBytes,
+    );
     const result = await this.handleHttpEndpoint(endpoint, {
       method: request.method ?? 'GET',
       url: request.url ?? endpoint.path,
@@ -629,6 +725,15 @@ export class EndpointListenerManager {
 
   private isControlEndpoint(host: string, port: number): boolean {
     return host === this.appServer.host && port === this.appServer.port;
+  }
+
+  private isUpgradeAllowed(request: IncomingMessage): boolean {
+    return (
+      this.networkPolicy.isInboundSourceAllowed(request.socket.remoteAddress) &&
+      this.networkPolicy.isInboundOriginAllowed(
+        firstHeaderValue(request.headers.origin),
+      )
+    );
   }
 }
 
@@ -692,8 +797,14 @@ function closeServer(server: Server): Promise<void> {
   });
 }
 
-function setCorsHeaders(response: ServerResponse): void {
-  response.setHeader('access-control-allow-origin', '*');
+function setCorsHeaders(
+  response: ServerResponse,
+  origin: string | undefined,
+): void {
+  if (origin) {
+    response.setHeader('access-control-allow-origin', origin);
+    response.setHeader('vary', 'Origin');
+  }
   response.setHeader(
     'access-control-allow-methods',
     'GET,POST,PUT,PATCH,DELETE,OPTIONS',
@@ -709,16 +820,39 @@ function writeJson(
   statusCode: number,
   body: unknown,
 ): void {
-  response.writeHead(statusCode, {'content-type': 'application/json'});
+  response.writeHead(statusCode, {
+    'cache-control': 'no-store',
+    'content-type': 'application/json',
+    'x-content-type-options': 'nosniff',
+  });
   response.end(JSON.stringify(body ?? null));
 }
 
-async function readBody(request: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+async function readBody(
+  request: IncomingMessage,
+  maxBytes: number,
+): Promise<unknown> {
+  const declared = Number(request.headers['content-length']);
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    throw new EndpointRequestError(
+      413,
+      `HTTP request body exceeds the ${maxBytes} byte limit.`,
+    );
   }
-  const text = Buffer.concat(chunks).toString('utf8');
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of request) {
+    const encoded = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += encoded.byteLength;
+    if (total > maxBytes) {
+      throw new EndpointRequestError(
+        413,
+        `HTTP request body exceeds the ${maxBytes} byte limit.`,
+      );
+    }
+    chunks.push(encoded);
+  }
+  const text = Buffer.concat(chunks, total).toString('utf8');
   if (!text) {
     return undefined;
   }
@@ -741,11 +875,12 @@ async function sendWebSocket(
   url: string,
   encoded: string,
   options: {timeoutMs?: number; signal?: AbortSignal},
+  maxPayload: number,
 ): Promise<void> {
   options.signal?.throwIfAborted();
-  const socket = new WebSocket(url);
+  const socket = new WebSocket(url, {maxPayload});
   try {
-    await waitForSocketOpen(socket, url, options);
+    await waitForSocketOpen(socket, safeNetworkTarget(url), options);
     await sendOnOpenSocket(socket, encoded, options);
   } finally {
     socket.close();
@@ -823,4 +958,37 @@ function abortReason(reason: unknown): Error {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+class EndpointRequestError extends Error {
+  constructor(
+    readonly statusCode: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'EndpointRequestError';
+  }
+}
+
+function requestErrorStatus(error: unknown): number {
+  const statusCode = (error as {statusCode?: unknown})?.statusCode;
+  return typeof statusCode === 'number' && statusCode >= 400 && statusCode < 600
+    ? statusCode
+    : 500;
+}
+
+function firstHeaderValue(
+  value: string | string[] | undefined,
+): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function rejectUpgrade(socket: {end(data?: string): unknown}): void {
+  socket.end(
+    'HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n',
+  );
+}
+
+function asError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
 }

@@ -23,7 +23,8 @@ npm run secrets:init
 随后再次执行 `npm run secrets:init`，为新增的密钥引用生成本机值。
 
 启动前还应检查 `security.allowedApiSources`、`security.corsOrigins`、
-`security.allowedCommandRoots` 和 `security.allowShell`。
+`security.allowedCommandRoots`、`security.allowedExecutables`、`network.inbound` 和
+`network.outbound`。`security.allowShell` 必须保持 `false`。
 
 `web.yaml` 只控制开发模式下 Vite 的监听地址、开发端口和预览端口。它不会由 WebUI
 编辑，也不会进入配置历史；后端地址始终从 `app.yaml` 派生，避免在代码或前端中维护

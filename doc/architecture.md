@@ -45,6 +45,8 @@ WorkflowScheduler -> 持久调度状态 / 时区 / 补执行 -> WorkflowExecutor
 
 - `index.ts`：组合依赖并注册控制 API。
 - `apiSecurity.ts`：执行来源、CORS、令牌角色和安全审计策略。
+- `networkPolicy.ts`：统一执行入站来源/资源限制与外发地址、端口和负载策略。
+- `runtimePolicy.ts`：在正式服务入口执行 Node.js 安全版本基线。
 - `endpointListenerManager.ts`：按 `host:port` 复用底层监听器，并按路径分发 HTTP/WS 消息。
 - `messageTemplateDecoder.ts`：加载模板、校验 JSON、提取稳定字段和生成发送内容。
 - `eventProcessor.ts`：持久化事件、匹配旧规则或工作流触发器。
@@ -79,7 +81,12 @@ React 单页界面。界面只通过 `/api/*` 使用后端能力；中文和英�
 
 ## 安全边界
 
-`/api/*` 控制面先检查来源白名单，再按只读、操作和管理角色检查 `x-las-token`，浏览器请求还受精确 CORS 来源限制。普通配置使用 `${secret:name}` 或 `${env:NAME}` 引用密钥；返回配置、请求日志与审计记录不会暴露解析后的令牌。命令动作只能在 `allowedCommandRoots` 中运行，Shell 默认关闭。该服务面向可信本机网络，不应在没有额外鉴权和反向代理保护的情况下暴露到公网。
+`/api/*` 控制面先检查来源白名单，再按只读、操作和管理角色检查 `x-las-token`，浏览器
+请求还受精确 CORS 来源限制。业务监听和全部外发调用统一经过 `NetworkPolicy`。普通配置
+使用 `${secret:name}` 或 `${env:NAME}` 引用密钥；返回配置、请求日志与审计记录不会暴露
+解析后的令牌。命令动作只能使用绝对允许程序，并在真实路径位于允许根目录时以无 Shell、
+最小环境运行。该服务面向可信本机网络，不应在没有 TLS、额外鉴权和防火墙保护的情况下
+暴露到公网。
 
 ## 测试边界
 

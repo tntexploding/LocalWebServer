@@ -11,9 +11,9 @@ export const repositoryRoot = path.resolve(
 );
 
 export const testTokens = {
-  admin: 'e2e-admin-token',
-  operator: 'e2e-operator-token',
-  read: 'e2e-read-token',
+  admin: 'test-e2e-admin-token-0000000000000000',
+  operator: 'test-e2e-operator-token-0000000000000',
+  read: 'test-e2e-read-token-000000000000000000',
 };
 
 export async function allocatePort() {
@@ -38,11 +38,34 @@ export function baseAppConfig(port) {
       readToken: '${secret:readToken}',
       requireTokenForRead: true,
       allowedApiSources: ['127.0.0.1', '::1'],
-      corsOrigins: ['http://127.0.0.1:5277'],
+      corsOrigins: [`http://127.0.0.1:${port}`, 'http://127.0.0.1:5277'],
       allowedCommandRoots: ['.'],
+      allowedExecutables: [process.execPath],
+      commandEnvironmentAllowlist: ['PATH', 'PATHEXT', 'SystemRoot', 'TEMP'],
       allowShell: false,
     },
-    automation: {maxConcurrentActions: 2},
+    network: {
+      inbound: {
+        allowedSources: ['127.0.0.1', '::1'],
+        allowedOrigins: [],
+        maxHttpBodyBytes: 1048576,
+        maxWebSocketMessageBytes: 1048576,
+        maxWebSocketConnectionsPerEndpoint: 16,
+        requestTimeoutMs: 15000,
+        headersTimeoutMs: 10000,
+        keepAliveTimeoutMs: 5000,
+        maxHeadersCount: 100,
+      },
+      outbound: {
+        allowedHostnames: ['localhost'],
+        allowedAddresses: ['loopback'],
+        allowedPorts: [port],
+        maxHttpRequestBytes: 1048576,
+        maxHttpResponseBytes: 1048576,
+        maxWebSocketMessageBytes: 1048576,
+      },
+    },
+    automation: {maxConcurrentActions: 2, maxActionOutputBytes: 1048576},
     storage: {
       eventLogPath: 'data/events.jsonl',
       runLogPath: 'data/runs.jsonl',

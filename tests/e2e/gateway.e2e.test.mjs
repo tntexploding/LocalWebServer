@@ -55,8 +55,16 @@ test(
       await project?.dispose();
     });
 
+    const appConfig = baseAppConfig(controlPort);
+    appConfig.network.inbound.maxHttpBodyBytes = 1024;
+    appConfig.network.outbound.allowedPorts = [
+      controlPort,
+      endpointPort,
+      sinkPort,
+      wsPort,
+    ];
     project = await createTestProject({
-      app: baseAppConfig(controlPort),
+      app: appConfig,
       endpoints: {
         version: 1,
         httpServers: [
@@ -112,6 +120,39 @@ test(
       templates: {'e2e.json': messageTemplate()},
     });
     runtime = await startServer(project.root, controlPort);
+
+    const endpointUrl = `http://127.0.0.1:${endpointPort}/message`;
+    assert.equal(
+      (
+        await fetch(endpointUrl, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            origin: 'https://attacker.example',
+          },
+          body: JSON.stringify({command: 'hello'}),
+        })
+      ).status,
+      403,
+    );
+    assert.equal(
+      (
+        await fetch(endpointUrl, {
+          method: 'POST',
+          headers: {'content-type': 'text/plain'},
+          body: 'x'.repeat(1025),
+        })
+      ).status,
+      413,
+    );
+    assert.equal(
+      (
+        await fetch(`${runtime.baseUrl}/api/health`, {
+          headers: {origin: 'https://attacker.example'},
+        })
+      ).status,
+      403,
+    );
 
     assert.equal((await fetch(`${runtime.baseUrl}/api/config`)).status, 401);
     assert.equal(

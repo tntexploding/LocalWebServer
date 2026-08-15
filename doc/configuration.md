@@ -20,8 +20,9 @@
 `config/app.yaml` 包含四组必须显式填写的设置：
 
 - `server`：控制 API 的 `host`、`port` 和兼容 WS 路径。
-- `security`：角色令牌引用、API 来源、CORS、命令允许目录和 Shell 开关。
-- `automation`：最大并发动作数。
+- `security`：角色令牌引用、API 来源、CORS、命令目录、可执行文件和环境变量白名单。
+- `network`：业务端点入站来源/Origin/资源限制与外发目标白名单。
+- `automation`：最大并发动作数与单次动作输出上限。
 - `storage`：事件/运行/审计日志、调度状态、配置历史和日志轮转设置。
 
 推荐先执行 `npm run secrets:init`。普通配置只保存引用：
@@ -38,6 +39,34 @@ security:
 
 `${secret:name}` 从忽略版本控制的 `config/secrets.yaml` 读取，`${env:NAME}` 从进程环境
 读取。缺失引用会阻止启动或保存；结构化保存会把已知密钥值重新保护为引用。
+解析后的三个角色令牌必须至少 32 字符且互不相同。原始配置接口会拒绝敏感字段或敏感
+URL 查询参数中的明文值。
+
+网络策略示例：
+
+```yaml
+network:
+  inbound:
+    allowedSources: [127.0.0.1, '::1']
+    allowedOrigins: []
+    maxHttpBodyBytes: 1048576
+    maxWebSocketMessageBytes: 1048576
+    maxWebSocketConnectionsPerEndpoint: 16
+    requestTimeoutMs: 15000
+    headersTimeoutMs: 10000
+    keepAliveTimeoutMs: 5000
+    maxHeadersCount: 100
+  outbound:
+    allowedHostnames: [localhost]
+    allowedAddresses: [127.0.0.1, '::1']
+    allowedPorts: [4789, 7800, 8765]
+    maxHttpRequestBytes: 1048576
+    maxHttpResponseBytes: 1048576
+    maxWebSocketMessageBytes: 1048576
+```
+
+地址项接受精确 IP、CIDR 或 `loopback`；主机名必须是无通配符的小写精确名称。外发 URL
+还必须匹配允许端口。公共主机解析到私网、回环、链路本地或保留地址时会被拒绝。
 
 ```yaml
 storage:
@@ -195,7 +224,8 @@ match:
 外部消息只能触发已经保存的动作，不能直接指定任意命令。
 
 工作流动作节点只需使用 `{type: reference, actionId: <动作 ID>}`。命令与脚本仍经过
-相同的允许目录、Shell 与超时安全检查。脱敏示例见
+相同的真实路径、绝对可执行文件、环境变量、输出与超时安全检查。Shell 始终关闭。
+脱敏示例见
 [`config/actions.example.yaml`](../config/actions.example.yaml)。
 
 HTTP/WS 发送动作支持超时和指数退避重试。HTTP 仅重试网络错误、超时、`408`、`425`、

@@ -40,7 +40,10 @@ npm run format
 npm run check
 ```
 
-`npm run check` 依次执行仓库敏感边界审查、非写入格式检查、GTS lint、全部工作区类型检查、生产构建、单元测试、独立进程 E2E 和 Chrome 交互测试。
+`npm run check` 依次执行 Node.js 安全基线、仓库/Git 历史敏感边界、锁文件供应链、非写入
+格式、GTS lint、全部工作区类型检查、生产构建、单元测试、独立进程 E2E 和 Chrome 交互
+测试。联网发布前还应单独执行 `npm run audit:dependencies`，获取最新漏洞数据并验证依赖
+签名和来源证明。
 
 可分层运行：
 

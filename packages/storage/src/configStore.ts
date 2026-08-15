@@ -26,6 +26,12 @@ const CONFIG_NAMES: ConfigDocumentName[] = [
   'rules',
   'actions',
 ];
+const SENSITIVE_CONFIG_KEY =
+  /(authorization|cookie|credential|password|private.?key|secret|token|api.?key)/iu;
+const SENSITIVE_QUERY_KEY =
+  /^(?:api[_-]?key|access[_-]?token|auth|authorization|credential|password|secret|token)$/iu;
+const CONFIG_REFERENCE =
+  /\$\{(?:secret:[A-Za-z][A-Za-z0-9_.-]*|env:[A-Za-z_][A-Za-z0-9_]*)\}|\$\{\{/u;
 
 /** Raw YAML source for every editable configuration document. */
 export type RawConfigFiles = Record<ConfigDocumentName, string>;
@@ -240,6 +246,7 @@ export class ConfigStore {
       const parsed = override?.value ?? (YAML.parse(source) as unknown);
       const migration = migrateConfigDocument(name, parsed);
       values[name] = migration.value;
+      assertNoInlineSensitiveValues(migration.value, name);
       sources[name] = ensureFinalNewline(
         migration.migrated || override?.value
           ? YAML.stringify(migration.value)
@@ -445,5 +452,66 @@ function sha256(value: string): string {
 function assertRevisionId(value: string): void {
   if (!/^[0-9TZ.-]+-[0-9a-f-]{36}$/u.test(value)) {
     throw new Error('Invalid configuration revision id.');
+  }
+}
+
+function assertNoInlineSensitiveValues(
+  value: unknown,
+  currentPath: string,
+): void {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) =>
+      assertNoInlineSensitiveValues(item, `${currentPath}[${index}]`),
+    );
+    return;
+  }
+  if (!value || typeof value !== 'object') return;
+  for (const [key, item] of Object.entries(value)) {
+    const itemPath = `${currentPath}.${key}`;
+    if (
+      SENSITIVE_CONFIG_KEY.test(key) &&
+      typeof item === 'string' &&
+      item.trim() !== '' &&
+      !CONFIG_REFERENCE.test(item)
+    ) {
+      throw new InlineSecretError(
+        `${itemPath} must use a \${secret:name}, \${env:NAME}, or workflow expression reference.`,
+      );
+    }
+    assertNoInlineUrlCredential(item, itemPath);
+    assertNoInlineSensitiveValues(item, itemPath);
+  }
+}
+
+function assertNoInlineUrlCredential(
+  value: unknown,
+  currentPath: string,
+): void {
+  if (typeof value !== 'string' || !/^https?:|^wss?:/iu.test(value)) return;
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return;
+  }
+  for (const [name, item] of parsed.searchParams) {
+    if (
+      SENSITIVE_QUERY_KEY.test(name) &&
+      item.trim() !== '' &&
+      !CONFIG_REFERENCE.test(item)
+    ) {
+      throw new InlineSecretError(
+        `${currentPath} contains an inline credential query parameter; use a secret reference.`,
+      );
+    }
+  }
+}
+
+class InlineSecretError extends Error {
+  readonly statusCode = 400;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'InlineSecretError';
   }
 }

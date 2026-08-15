@@ -38,19 +38,38 @@ test('reports duplicate ids, unknown references, and unreachable nodes', () => {
   assert.ok(issues.some(issue => issue.code === 'unreachable_node'));
 });
 
+test('rejects workflow expressions in executable and filesystem fields', () => {
+  const config = validConfig();
+  config.actions.push({
+    id: 'dynamic-command',
+    type: 'command',
+    cwd: '${{ trigger.body.cwd }}',
+    command: '${{ trigger.body.command }}',
+  });
+
+  const issues = collectConfigValidationIssues(config);
+  assert.equal(
+    issues.filter(issue => issue.code === 'unsafe_expression').length,
+    2,
+  );
+});
+
 function validConfig() {
   return {
     app: appConfigSchema.parse({
       server: {host: '127.0.0.1', port: 4789, webSocketPath: '/ws'},
       security: {
-        apiToken: 'test',
+        apiToken: 'test-admin-token-000000000000000000000',
         requireTokenForRead: true,
         allowedApiSources: ['127.0.0.1', '::1'],
         corsOrigins: [],
         allowedCommandRoots: [],
+        allowedExecutables: [],
+        commandEnvironmentAllowlist: [],
         allowShell: false,
       },
-      automation: {maxConcurrentActions: 2},
+      network: testNetworkConfig(),
+      automation: {maxConcurrentActions: 2, maxActionOutputBytes: 1048576},
       storage: {
         eventLogPath: 'data/events.jsonl',
         runLogPath: 'data/runs.jsonl',
@@ -124,5 +143,29 @@ function validConfig() {
         },
       },
     ],
+  };
+}
+
+function testNetworkConfig() {
+  return {
+    inbound: {
+      allowedSources: ['127.0.0.1', '::1'],
+      allowedOrigins: [],
+      maxHttpBodyBytes: 1048576,
+      maxWebSocketMessageBytes: 1048576,
+      maxWebSocketConnectionsPerEndpoint: 16,
+      requestTimeoutMs: 15000,
+      headersTimeoutMs: 10000,
+      keepAliveTimeoutMs: 5000,
+      maxHeadersCount: 100,
+    },
+    outbound: {
+      allowedHostnames: ['localhost'],
+      allowedAddresses: ['loopback'],
+      allowedPorts: [4789],
+      maxHttpRequestBytes: 1048576,
+      maxHttpResponseBytes: 1048576,
+      maxWebSocketMessageBytes: 1048576,
+    },
   };
 }

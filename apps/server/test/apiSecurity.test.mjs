@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {ApiSecurity, addressMatchesRule} from '../dist/apiSecurity.js';
+import {
+  ApiSecurity,
+  addressMatchesRule,
+  assertValidApiSecurityPolicy,
+} from '../dist/apiSecurity.js';
 
 const security = {
   apiToken: 'admin-token',
@@ -64,4 +68,23 @@ test('writes security audit metadata without request content', async () => {
   assert.equal(records[0].path, '/api/actions/example/run');
   assert.equal('body' in records[0], false);
   assert.equal('token' in records[0], false);
+});
+
+test('rejects wildcard control sources and non-origin browser URLs', () => {
+  assert.throws(
+    () =>
+      assertValidApiSecurityPolicy({
+        ...security,
+        allowedApiSources: ['*'],
+      }),
+    /Invalid control API source rule/u,
+  );
+  assert.throws(
+    () =>
+      assertValidApiSecurityPolicy({
+        ...security,
+        corsOrigins: ['https://example.test/path'],
+      }),
+    /Invalid control API browser origin/u,
+  );
 });

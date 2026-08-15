@@ -6,6 +6,11 @@ import {
   resolveWsEndpoint,
 } from './endpointListenerManager.js';
 import type {MessageTemplateDecoder} from './messageTemplateDecoder.js';
+import {
+  NetworkPolicy,
+  readLimitedResponseText,
+  safeNetworkTarget,
+} from './networkPolicy.js';
 
 /** Endpoint categories supported by the connection tester. */
 export type EndpointTestKind =
@@ -36,6 +41,7 @@ export class EndpointTester {
   constructor(
     private readonly getConfig: () => LoadedConfig,
     private readonly messageTemplates: MessageTemplateDecoder,
+    private readonly networkPolicy: NetworkPolicy,
   ) {}
 
   async test(
@@ -77,7 +83,8 @@ export class EndpointTester {
         id,
         target,
         startedAt,
-        await fetchWithTimeout(target, httpTestInit(options)),
+        await this.fetch(target, httpTestInit(options)),
+        config.app.network.outbound.maxHttpResponseBytes,
       );
     }
 
@@ -87,7 +94,7 @@ export class EndpointTester {
       assertEnabled(endpoint.enabled, `WebSocket server is disabled: ${id}`);
       const resolved = resolveWsEndpoint(endpoint, config.app.server);
       const target = `ws://${connectHost(resolved.host)}:${resolved.port}${resolved.path}`;
-      await testWebSocket(target, options.body);
+      await this.testWebSocket(target, options.body);
       return websocketResult(kind, id, target, startedAt);
     }
 
@@ -97,10 +104,15 @@ export class EndpointTester {
       );
       if (!endpoint) throw new Error(`Unknown HTTP client: ${id}`);
       assertEnabled(endpoint.enabled, `HTTP client is disabled: ${id}`);
-      const target = new URL(
+      const base = new URL(endpoint.baseUrl);
+      const targetUrl = new URL(
         options.path?.trim() || '/api/health',
         endpoint.baseUrl,
-      ).toString();
+      );
+      if (targetUrl.origin !== base.origin) {
+        throw new Error('HTTP test path must not change the client origin.');
+      }
+      const target = targetUrl.toString();
       const requestBody =
         options.body !== undefined
           ? options.body
@@ -111,7 +123,7 @@ export class EndpointTester {
                 endpoint.templateFields,
               )
             : undefined;
-      const response = await fetchWithTimeout(target, {
+      const response = await this.fetch(target, {
         ...httpTestInit({...options, body: requestBody}),
         headers: {
           ...endpoint.headers,
@@ -121,14 +133,41 @@ export class EndpointTester {
             : {'content-type': 'application/json'}),
         },
       });
-      return httpResult(kind, id, target, startedAt, response);
+      return httpResult(
+        kind,
+        id,
+        target,
+        startedAt,
+        response,
+        config.app.network.outbound.maxHttpResponseBytes,
+      );
     }
 
     const endpoint = config.endpoints.wsClients.find(item => item.id === id);
     if (!endpoint) throw new Error(`Unknown WebSocket client: ${id}`);
     assertEnabled(endpoint.enabled, `WebSocket client is disabled: ${id}`);
-    await testWebSocket(endpoint.url, options.body);
+    await this.testWebSocket(endpoint.url, options.body);
     return websocketResult(kind, id, endpoint.url, startedAt);
+  }
+
+  private async fetch(url: string, init: RequestInit): Promise<Response> {
+    await this.networkPolicy.assertHttpUrl(url);
+    const encodedBody = typeof init.body === 'string' ? init.body : undefined;
+    this.networkPolicy.assertHttpRequestSize(encodedBody);
+    return fetchWithTimeout(url, {...init, redirect: 'manual'});
+  }
+
+  private async testWebSocket(url: string, body: unknown): Promise<void> {
+    await this.networkPolicy.assertWebSocketUrl(url);
+    const encoded = JSON.stringify(
+      body ?? {type: 'endpoint.test', at: new Date().toISOString()},
+    );
+    this.networkPolicy.assertWebSocketMessageSize(encoded);
+    await testWebSocket(
+      url,
+      encoded,
+      this.getConfig().app.network.outbound.maxWebSocketMessageBytes,
+    );
   }
 }
 
@@ -158,14 +197,15 @@ async function httpResult(
   target: string,
   startedAt: number,
   response: Response,
+  maxResponseBytes: number,
 ): Promise<EndpointTestResult> {
   return {
     ok: response.ok,
     kind,
     id,
-    target,
+    target: safeNetworkTarget(target),
     statusCode: response.status,
-    responseBody: await responseSummary(response),
+    responseBody: await responseSummary(response, maxResponseBytes),
     durationMs: Date.now() - startedAt,
     message: `HTTP ${response.status} ${response.statusText}`,
   };
@@ -181,7 +221,7 @@ function websocketResult(
     ok: true,
     kind,
     id,
-    target,
+    target: safeNetworkTarget(target),
     durationMs: Date.now() - startedAt,
     message: 'WebSocket connection opened.',
   };
@@ -196,8 +236,9 @@ function hasHeader(
 
 async function responseSummary(
   response: Response,
+  maxBytes: number,
 ): Promise<string | undefined> {
-  const text = await response.text();
+  const text = await readLimitedResponseText(response, maxBytes);
   return text ? text.slice(0, 2000) : undefined;
 }
 
@@ -214,20 +255,20 @@ async function fetchWithTimeout(
   }
 }
 
-async function testWebSocket(url: string, body?: unknown): Promise<void> {
+async function testWebSocket(
+  url: string,
+  encodedBody: string,
+  maxPayload: number,
+): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    const socket = new WebSocket(url);
+    const socket = new WebSocket(url, {maxPayload});
     const timeout = setTimeout(() => {
       socket.terminate();
       reject(new Error('WebSocket test timed out.'));
     }, 5000);
 
     socket.once('open', () => {
-      socket.send(
-        JSON.stringify(
-          body ?? {type: 'endpoint.test', at: new Date().toISOString()},
-        ),
-      );
+      socket.send(encodedBody);
       clearTimeout(timeout);
       socket.close();
       resolve();

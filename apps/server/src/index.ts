@@ -15,6 +15,7 @@ import type {RawConfigFiles} from '@las/storage';
 import {
   appConfigSchema,
   assertValidConfigDependencies,
+  containsWorkflowExpression,
   type ActionConfig,
   endpointsConfigSchema,
   type ActionResult,
@@ -26,7 +27,12 @@ import {
   type RuleConfig,
   type SecurityAuditRecord,
 } from '@las/core';
-import {ApiSecurity, type ApiPermission, type ApiRole} from './apiSecurity.js';
+import {
+  ApiSecurity,
+  assertValidApiSecurityPolicy,
+  type ApiPermission,
+  type ApiRole,
+} from './apiSecurity.js';
 import {ActionExecutor} from './actionExecutor.js';
 import {ActionQueue} from './actionQueue.js';
 import {EndpointListenerManager} from './endpointListenerManager.js';
@@ -35,17 +41,28 @@ import {EventProcessor, makeEvent} from './eventProcessor.js';
 import {EventWaitBroker} from './eventWaitBroker.js';
 import {InteractionBroker} from './interactionBroker.js';
 import {MessageTemplateDecoder} from './messageTemplateDecoder.js';
+import {
+  assertValidNetworkPolicy,
+  NetworkPolicy,
+  safeNetworkTarget,
+} from './networkPolicy.js';
 import {WorkflowExecutor} from './workflowExecutor.js';
 import {WorkflowScheduler} from './workflowScheduler.js';
+import {assertSupportedRuntime} from './runtimePolicy.js';
 
 const codeRoot = path.resolve(
   fileURLToPath(new URL('../../..', import.meta.url)),
 );
+await assertSupportedRuntime(codeRoot);
 const rootDir = path.resolve(process.env.LAS_ROOT_DIR ?? codeRoot);
 const messageTemplates = new MessageTemplateDecoder(rootDir);
 const configStore = new ConfigStore(rootDir, {
   secretsPath: process.env.LAS_SECRETS_PATH,
   validate: async candidate => {
+    assertValidApiSecurityPolicy(candidate.app.security);
+    assertValidNetworkPolicy(candidate.app.network);
+    validateManagedStoragePaths(candidate.app);
+    await validateStaticNetworkTargets(candidate);
     const templates = await messageTemplates.list();
     assertValidConfigDependencies(candidate, {
       templateIds: new Set(templates.map(template => template.name)),
@@ -55,24 +72,29 @@ const configStore = new ConfigStore(rootDir, {
 await ensureDataDir(rootDir);
 
 let config = await configStore.load();
-const endpointTester = new EndpointTester(() => config, messageTemplates);
+const networkPolicy = new NetworkPolicy(() => config.app.network);
+const endpointTester = new EndpointTester(
+  () => config,
+  messageTemplates,
+  networkPolicy,
+);
 
 const eventLog = new JsonlStore<EventEnvelope>(
-  path.resolve(rootDir, config.app.storage.eventLogPath),
+  resolveManagedDataPath(config.app.storage.eventLogPath, 'eventLogPath'),
   {
     maxBytes: config.app.storage.maxLogBytes,
     maxFiles: config.app.storage.maxLogFiles,
   },
 );
 const runLog = new JsonlStore<ActionResult>(
-  path.resolve(rootDir, config.app.storage.runLogPath),
+  resolveManagedDataPath(config.app.storage.runLogPath, 'runLogPath'),
   {
     maxBytes: config.app.storage.maxLogBytes,
     maxFiles: config.app.storage.maxLogFiles,
   },
 );
 const auditLog = new JsonlStore<SecurityAuditRecord>(
-  path.resolve(rootDir, config.app.storage.auditLogPath),
+  resolveManagedDataPath(config.app.storage.auditLogPath, 'auditLogPath'),
   {
     maxBytes: config.app.storage.maxLogBytes,
     maxFiles: config.app.storage.maxLogFiles,
@@ -81,9 +103,17 @@ const auditLog = new JsonlStore<SecurityAuditRecord>(
 const schedulerState = new JsonFileStore<{
   version: 1;
   lastTriggeredAt: Record<string, string>;
-}>(path.resolve(rootDir, config.app.storage.schedulerStatePath));
+}>(
+  resolveManagedDataPath(
+    config.app.storage.schedulerStatePath,
+    'schedulerStatePath',
+  ),
+);
 
 const app = fastify({
+  bodyLimit: config.app.network.inbound.maxHttpBodyBytes,
+  requestTimeout: config.app.network.inbound.requestTimeoutMs,
+  keepAliveTimeout: config.app.network.inbound.keepAliveTimeoutMs,
   logger: {
     redact: {
       paths: [
@@ -100,6 +130,8 @@ const app = fastify({
     },
   },
 });
+app.server.headersTimeout = config.app.network.inbound.headersTimeoutMs;
+app.server.maxHeadersCount = config.app.network.inbound.maxHeadersCount;
 const apiSecurity = new ApiSecurity(
   () => config.app.security,
   auditLog,
@@ -115,9 +147,34 @@ await app.register(cors, {
   },
 });
 
+app.addHook('onSend', async (request, reply, payload) => {
+  reply.header('x-content-type-options', 'nosniff');
+  reply.header('x-frame-options', 'DENY');
+  reply.header('referrer-policy', 'no-referrer');
+  reply.header(
+    'permissions-policy',
+    'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
+  );
+  if (request.url === '/' || request.url.startsWith('/ui/')) {
+    reply.header(
+      'content-security-policy',
+      "default-src 'self'; base-uri 'none'; connect-src 'self'; font-src 'self' data:; form-action 'none'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self'; style-src 'self'",
+    );
+  }
+  if (request.url.startsWith('/api/')) {
+    reply.header('cache-control', 'no-store');
+  }
+  return payload;
+});
+
 app.addHook('onRequest', async (request, reply) => {
   if (!request.url.startsWith('/api/')) return;
-  if (apiSecurity.isSourceAllowed(request.ip)) return;
+  const sourceAllowed = apiSecurity.isSourceAllowed(request.ip);
+  const originAllowed = apiSecurity.isOriginAllowed(request.headers.origin);
+  if (sourceAllowed && originAllowed) return;
+  const reason = sourceAllowed
+    ? 'Browser origin is not allowlisted.'
+    : 'Source address is not allowlisted.';
   await apiSecurity.audit({
     requestId: request.id,
     remoteAddress: request.ip,
@@ -126,9 +183,13 @@ app.addHook('onRequest', async (request, reply) => {
     permission: requestPermission(request.method, request.url),
     outcome: 'denied',
     statusCode: 403,
-    reason: 'Source address is not allowlisted.',
+    reason,
   });
-  return reply.code(403).send({error: 'API source is not allowed.'});
+  return reply.code(403).send({
+    error: sourceAllowed
+      ? 'API origin is not allowed.'
+      : 'API source is not allowed.',
+  });
 });
 
 app.addHook('preSerialization', async (request, _reply, payload) => {
@@ -176,7 +237,7 @@ const endpointListeners: EndpointListenerManager = new EndpointListenerManager(
       body: message.body,
       meta: {
         method: message.method,
-        path: message.path,
+        path: safeRequestPath(message.path),
         remoteAddress: message.remoteAddress,
         headers: redactSensitiveHeaders(message.headers),
         listener: {
@@ -207,11 +268,12 @@ const endpointListeners: EndpointListenerManager = new EndpointListenerManager(
                 port: message.endpoint.port,
               },
             }
-          : {client: {url: message.endpoint.url}}),
+          : {client: {url: safeNetworkTarget(message.endpoint.url)}}),
       },
     });
     await processor.receive(event);
   },
+  networkPolicy,
   (error, context) => {
     app.log.error({error, context}, 'Endpoint listener operation failed.');
   },
@@ -219,12 +281,14 @@ const endpointListeners: EndpointListenerManager = new EndpointListenerManager(
 const interactions = new InteractionBroker();
 const eventWaits = new EventWaitBroker();
 const executor: ActionExecutor = new ActionExecutor(
-  config.app,
+  () => config.app,
   (target, payload, options) =>
     endpointListeners.send(target, payload, options),
   messageTemplates,
   interactions,
   eventWaits,
+  networkPolicy,
+  rootDir,
 );
 const queue: ActionQueue = new ActionQueue(
   config.app.automation.maxConcurrentActions,
@@ -571,7 +635,7 @@ app.post<{Params: {id: string}}>('/api/actions/:id/run', async request => {
     source: 'ui.manual',
     kind: 'http.request',
     body: {actionId: request.params.id},
-    meta: {method: request.method, path: request.url},
+    meta: {method: request.method, path: safeRequestPath(request.url)},
   });
   return processor.runAction(request.params.id, event);
 });
@@ -691,6 +755,78 @@ function publicConfig(): LoadedConfig {
   return configStore.redact(config);
 }
 
+async function validateStaticNetworkTargets(
+  candidate: LoadedConfig,
+): Promise<void> {
+  const policy = new NetworkPolicy(() => candidate.app.network);
+  const validations: Array<Promise<URL>> = [];
+  for (const endpoint of candidate.endpoints.httpClients) {
+    validations.push(policy.assertConfiguredHttpUrl(endpoint.baseUrl));
+  }
+  for (const endpoint of candidate.endpoints.wsClients) {
+    validations.push(policy.assertConfiguredWebSocketUrl(endpoint.url));
+  }
+  for (const action of candidate.actions) {
+    if (
+      action.type === 'send_http' &&
+      !containsWorkflowExpression(action.url)
+    ) {
+      validations.push(policy.assertConfiguredHttpUrl(action.url));
+    }
+    if (
+      action.type === 'send_ws' &&
+      /^wss?:\/\//u.test(action.target) &&
+      !containsWorkflowExpression(action.target)
+    ) {
+      validations.push(policy.assertConfiguredWebSocketUrl(action.target));
+    }
+  }
+  for (const rule of candidate.rules) {
+    for (const node of rule.workflow?.nodes ?? []) {
+      if (node.type !== 'action') continue;
+      if (
+        node.action.type === 'send_http' &&
+        node.action.url &&
+        !containsWorkflowExpression(node.action.url)
+      ) {
+        validations.push(policy.assertConfiguredHttpUrl(node.action.url));
+      }
+      if (
+        node.action.type === 'send_ws' &&
+        /^wss?:\/\//u.test(node.action.target) &&
+        !containsWorkflowExpression(node.action.target)
+      ) {
+        validations.push(
+          policy.assertConfiguredWebSocketUrl(node.action.target),
+        );
+      }
+    }
+  }
+  await Promise.all(validations);
+}
+
+function validateManagedStoragePaths(appConfig: AppConfig): void {
+  const paths = appConfig.storage;
+  resolveManagedDataPath(paths.eventLogPath, 'eventLogPath');
+  resolveManagedDataPath(paths.runLogPath, 'runLogPath');
+  resolveManagedDataPath(paths.auditLogPath, 'auditLogPath');
+  resolveManagedDataPath(paths.schedulerStatePath, 'schedulerStatePath');
+  resolveManagedDataPath(paths.configHistoryPath, 'configHistoryPath');
+}
+
+function resolveManagedDataPath(value: string, label: string): string {
+  const resolved = path.resolve(rootDir, value);
+  const relative = path.relative(rootDir, resolved);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    const error = new Error(
+      `${label} must stay inside the project root: ${value}`,
+    );
+    Object.assign(error, {statusCode: 400});
+    throw error;
+  }
+  return resolved;
+}
+
 function requestPermission(method: string, url: string): ApiPermission {
   const pathname = requestPath(url);
   if (pathname.startsWith('/api/config/raw')) return 'admin';
@@ -713,6 +849,11 @@ function requestPermission(method: string, url: string): ApiPermission {
 
 function requestPath(url: string): string {
   return new URL(url, 'http://localhost').pathname;
+}
+
+function safeRequestPath(url: string): string {
+  const parsed = new URL(url, 'http://localhost');
+  return `${parsed.pathname}${parsed.search ? '?[REDACTED]' : ''}`;
 }
 
 function isConfigDocumentName(value: string): value is ConfigDocumentName {
@@ -783,7 +924,10 @@ app.setErrorHandler((error, request, reply) => {
     ? configStore.redact(errorDetail.issues)
     : undefined;
   return reply.code(statusCode).send({
-    error: configStore.redact(normalized.message),
+    error:
+      statusCode >= 500
+        ? 'Internal server error.'
+        : configStore.redact(normalized.message),
     ...(issues ? {issues} : {}),
   });
 });

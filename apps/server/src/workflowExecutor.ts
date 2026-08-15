@@ -600,8 +600,13 @@ function resolveClientUrl(
   path: string | undefined,
 ): string | undefined {
   if (!baseUrl) return undefined;
-  return new URL(
+  const base = new URL(baseUrl);
+  const resolved = new URL(
     path ?? '',
     baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`,
-  ).toString();
+  );
+  if (resolved.origin !== base.origin) {
+    throw new Error('HTTP client paths must not change the configured origin.');
+  }
+  return resolved.toString();
 }

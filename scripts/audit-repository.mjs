@@ -53,6 +53,16 @@ const repositoryFiles = git([
   .split('\0')
   .filter(Boolean)
   .map(value => value.replaceAll('\\', '/'));
+const historyPaths = git([
+  'log',
+  '--all',
+  '--name-only',
+  '--pretty=format:',
+  '-z',
+])
+  .split('\0')
+  .filter(Boolean)
+  .map(value => value.replaceAll('\\', '/'));
 
 for (const relativePath of repositoryFiles) {
   if (isForbiddenTrackedPath(relativePath)) {
@@ -77,6 +87,28 @@ for (const relativePath of repositoryFiles) {
     violations.push(
       `Hard-coded credential value found in runtime source: ${relativePath}`,
     );
+  }
+}
+
+for (const relativePath of new Set(historyPaths)) {
+  if (isForbiddenTrackedPath(relativePath)) {
+    violations.push(
+      `Sensitive or machine-local path exists in Git history: ${relativePath}`,
+    );
+  }
+}
+
+const historyPatch = git([
+  'log',
+  '--all',
+  '--patch',
+  '--binary',
+  '--no-color',
+  '--format=commit:%H',
+]);
+for (const [name, pattern] of SECRET_PATTERNS) {
+  if (pattern.test(historyPatch)) {
+    violations.push(`${name} pattern found in Git history.`);
   }
 }
 
@@ -199,6 +231,7 @@ function spawnGit(args) {
   return spawnSync('git', args, {
     cwd: rootDir,
     encoding: 'utf8',
+    maxBuffer: 128 * 1024 * 1024,
     windowsHide: true,
   });
 }

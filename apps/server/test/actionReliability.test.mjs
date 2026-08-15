@@ -5,6 +5,7 @@ import {ActionExecutor} from '../dist/actionExecutor.js';
 import {EventWaitBroker} from '../dist/eventWaitBroker.js';
 import {InteractionBroker} from '../dist/interactionBroker.js';
 import {MessageTemplateDecoder} from '../dist/messageTemplateDecoder.js';
+import {NetworkPolicy} from '../dist/networkPolicy.js';
 
 test('retries transient HTTP failures and preserves the idempotency key', async t => {
   let attempts = 0;
@@ -23,12 +24,16 @@ test('retries transient HTTP failures and preserves the idempotency key', async 
   assert.notEqual(address, null);
   assert.equal(typeof address, 'object');
 
+  const appConfig = testAppConfig(address.port);
+  const networkPolicy = new NetworkPolicy(() => appConfig.network);
   const executor = new ActionExecutor(
-    {security: {allowedCommandRoots: []}},
+    () => appConfig,
     async () => undefined,
     new MessageTemplateDecoder(process.cwd()),
     new InteractionBroker(),
     new EventWaitBroker(),
+    networkPolicy,
+    process.cwd(),
   );
   const result = await executor.execute(
     {
@@ -65,6 +70,27 @@ function event() {
     kind: 'manual.test',
     body: {},
     meta: {},
+  };
+}
+
+function testAppConfig(port) {
+  return {
+    security: {
+      allowedCommandRoots: [],
+      allowedExecutables: [],
+      commandEnvironmentAllowlist: [],
+    },
+    network: {
+      outbound: {
+        allowedHostnames: [],
+        allowedAddresses: ['loopback'],
+        allowedPorts: [port],
+        maxHttpRequestBytes: 1048576,
+        maxHttpResponseBytes: 1048576,
+        maxWebSocketMessageBytes: 1048576,
+      },
+    },
+    automation: {maxActionOutputBytes: 1048576},
   };
 }
 

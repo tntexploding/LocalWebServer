@@ -1,15 +1,18 @@
 # Windows 部署
 
-## 生产式本机运行
+## 运行环境
+
+源码部署要求 Node.js 24.18.1 至 24.x。`npm run runtime:check` 和后端正式入口都会读取
+`release.config.json`，拒绝低于安全基线或未经支持的主版本。建议使用锁文件安装：
 
 ```powershell
-npm install
-npm run build
+npm ci --ignore-scripts
 npm run secrets:init
 npm start
 ```
 
-后端会托管 `apps/web/dist`，默认入口为 `http://127.0.0.1:4789/ui/`。生产运行只需要一个后端进程，不需要另开 Vite。
+后端构建并托管 `apps/web/dist`，默认入口为 `http://127.0.0.1:4789/ui/`，生产运行不需要
+另开 Vite。跨主机访问必须重新评估 TLS、监听地址、来源白名单、令牌和防火墙。
 
 ## 登录时启动
 
@@ -21,26 +24,32 @@ npm run startup:status
 npm run startup:uninstall
 ```
 
-安装前必须完成生产构建。任务在当前用户登录时隐藏启动
-`scripts/windows/run-server.ps1`，日志写入 `data/startup-agent.log`。项目目录被移动后，应先卸载旧任务再重新安装。
+任务在登录时隐藏启动 `scripts/windows/run-server.ps1`，日志写入
+`data/startup-agent.log`。项目目录移动后，应先卸载旧任务再重新安装。
 
 ## Windows 便携包
 
 ```powershell
 npm run package:portable
+npm run package:verify
 ```
 
-输出位于 `release/local-automation-server-win-x64.zip`。压缩包包含当前 Node.js 可执行文件、生产依赖、构建产物、示例配置和文档；不会包含实际 `config/*.yaml`、`config/templates/`、`doc/template/`、`data/` 或测试目录。
+打包器会下载 `release.config.json` 固定的 Node.js Windows x64 运行时，验证官方归档
+SHA-256，再用该运行时构建与安装生产依赖。输出包括：
 
-解压后首次运行：
+- `release/local-automation-server-win-x64.zip`
+- `release/local-automation-server-win-x64.zip.sha256`
+- `release/local-automation-server/` 可检查的暂存目录
+- 包内 `SBOM.cdx.json`、`MANIFEST.sha256` 与 `release-metadata.json`
 
-```text
-initialize.cmd
-start.cmd
-```
+包内不会包含实际 `config/*.yaml`、`config/templates/`、`doc/template/`、`data/` 或测试目录。
+解压后先运行 `initialize.cmd`，再运行 `start.cmd`。初始化只在文件不存在时复制脱敏示例，
+并生成独立随机令牌，不覆盖已有配置。
 
-`initialize.cmd` 只在文件不存在时复制示例配置，并生成独立的本机密钥文件；不会覆盖已有配置。启动后打开默认 `/ui/` 地址。部署到其他主机后必须重新检查监听地址、来源白名单、CORS、允许命令目录和防火墙。
+完整发布步骤与验证命令见 [发布流程](release.md)。
 
 ## 自定义运行根目录
 
-`LAS_ROOT_DIR` 可将运行配置和 `data/` 放到代码目录之外；`LAS_SECRETS_PATH` 可指定密钥文件位置。相对密钥路径以运行根目录为基准。WebUI 构建仍从程序目录加载，因此部署包的 `apps/web/dist` 必须保留。
+`LAS_ROOT_DIR` 可将运行配置和 `data/` 放到代码目录之外；`LAS_SECRETS_PATH` 可指定密钥
+文件位置。相对路径以运行根目录为基准，并且受管路径不得逃出该目录。WebUI 构建仍从
+程序目录加载，因此部署包中的 `apps/web/dist` 必须保留。

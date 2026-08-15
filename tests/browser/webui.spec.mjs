@@ -5,6 +5,7 @@ import {
   createTestProject,
   emptyEndpoints,
   startServer,
+  testTokens,
 } from '../support/testProject.mjs';
 
 let baseUrl;
@@ -64,12 +65,13 @@ test('authenticates, navigates, restores history view, and runs an action', asyn
     }
   });
 
-  await page.addInitScript(() => {
-    sessionStorage.setItem('las-token', 'e2e-admin-token');
-  });
+  await page.addInitScript(
+    token => sessionStorage.setItem('las-token', token),
+    testTokens.admin,
+  );
   await page.goto(`${baseUrl}/ui/`);
   await expect(page.getByRole('heading', {name: '概览'})).toBeVisible();
-  await expect(page.getByLabel('API 令牌')).toHaveValue('e2e-admin-token');
+  await expect(page.getByLabel('API 令牌')).toHaveValue(testTokens.admin);
   await page.getByTitle('刷新').click();
   await expect(page.getByRole('main').getByText('本地后端在线')).toBeVisible();
 

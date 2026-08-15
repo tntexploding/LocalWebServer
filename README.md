@@ -21,7 +21,7 @@ Local Automation Server 是一个本地 HTTP/WebSocket 网关与自动化服务�
 
 ## 环境要求
 
-- Node.js 20.19 或更高版本，推荐使用当前 LTS 版本。
+- Node.js 24.18.1 至 24.x；低于安全基线或未经支持的主版本会被启动器和服务入口拒绝。
 - npm 10 或更高版本。
 - Windows、macOS 或 Linux；命令动作本身可能依赖操作系统。
 
@@ -96,22 +96,25 @@ x-las-token: <your-local-admin-operator-or-read-token>
 
 ## 常用命令
 
-| 命令                        | 作用                                            |
-| --------------------------- | ----------------------------------------------- |
-| `npm run dev`               | 同时启动后端和 Vite WebUI。                     |
-| `npm start`                 | 构建并启动后端托管版本。                        |
-| `npm run secrets:init`      | 生成或迁移本机令牌到独立密钥文件。              |
-| `npm run config:normalize`  | 从脱敏模板补齐旧版 `app.yaml` 的缺失字段。      |
-| `npm run check`             | 检查格式、风格、类型、构建并运行全部测试。      |
-| `npm run audit:repo`        | 检查误跟踪配置、凭据模式和运行时硬编码地址。    |
-| `npm run test:unit`         | 运行包级单元和组件测试。                        |
-| `npm run test:e2e`          | 通过构建入口和公共协议运行独立进程测试。        |
-| `npm run test:browser`      | 使用 Chrome 验证生产 WebUI 交互。               |
-| `npm run package:portable`  | 生成不含本机配置、模板和密钥的 Windows 便携包。 |
-| `npm run startup:install`   | 为当前 Windows 用户安装登录启动任务。           |
-| `npm run startup:status`    | 查询登录启动任务状态。                          |
-| `npm run startup:uninstall` | 删除登录启动任务。                              |
-| `npm run clean`             | 删除构建产物、增量缓存和开发日志。              |
+| 命令                         | 作用                                                                    |
+| ---------------------------- | ----------------------------------------------------------------------- |
+| `npm run dev`                | 同时启动后端和 Vite WebUI。                                             |
+| `npm start`                  | 构建并启动后端托管版本。                                                |
+| `npm run secrets:init`       | 生成或迁移本机令牌到独立密钥文件。                                      |
+| `npm run config:normalize`   | 从脱敏模板补齐旧版 `app.yaml` 的缺失字段。                              |
+| `npm run check`              | 检查格式、风格、类型、构建并运行全部测试。                              |
+| `npm run audit:repo`         | 检查当前文件及 Git 历史中的配置、凭据模式和运行时硬编码地址。           |
+| `npm run audit:lock`         | 离线检查生产依赖来源、完整性、许可证和安装脚本。                        |
+| `npm run audit:dependencies` | 向 npm 查询漏洞并验证依赖签名和来源证明。                               |
+| `npm run test:unit`          | 运行包级单元和组件测试。                                                |
+| `npm run test:e2e`           | 通过构建入口和公共协议运行独立进程测试。                                |
+| `npm run test:browser`       | 使用 Chrome 验证生产 WebUI 交互。                                       |
+| `npm run package:portable`   | 使用固定且校验过的 Node.js 生成带 SBOM、清单和校验和的 Windows 便携包。 |
+| `npm run package:verify`     | 重新验证便携目录、运行时、逐文件清单和压缩包摘要。                      |
+| `npm run startup:install`    | 为当前 Windows 用户安装登录启动任务。                                   |
+| `npm run startup:status`     | 查询登录启动任务状态。                                                  |
+| `npm run startup:uninstall`  | 删除登录启动任务。                                                      |
+| `npm run clean`              | 删除构建产物、增量缓存和开发日志。                                      |
 
 ## 工程结构
 
@@ -134,6 +137,8 @@ tests/             仅通过构建入口和公开协议运行的独立验收测�
 - [自动化流程](doc/workflow_automation.md)
 - [HTTP 通信规范](doc/http_communication_spec.md)
 - [安全说明](SECURITY.md)
+- [安全审计记录](doc/security-audit.md)
+- [发布流程](doc/release.md)
 - [部署说明](doc/deployment.md)
 
 ## 项目状态

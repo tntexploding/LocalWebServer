@@ -433,10 +433,34 @@ export interface AppConfig {
     allowedApiSources: string[];
     corsOrigins: string[];
     allowedCommandRoots: string[];
-    allowShell: boolean;
+    allowedExecutables: string[];
+    commandEnvironmentAllowlist: string[];
+    allowShell: false;
+  };
+  network: {
+    inbound: {
+      allowedSources: string[];
+      allowedOrigins: string[];
+      maxHttpBodyBytes: number;
+      maxWebSocketMessageBytes: number;
+      maxWebSocketConnectionsPerEndpoint: number;
+      requestTimeoutMs: number;
+      headersTimeoutMs: number;
+      keepAliveTimeoutMs: number;
+      maxHeadersCount: number;
+    };
+    outbound: {
+      allowedHostnames: string[];
+      allowedAddresses: string[];
+      allowedPorts: number[];
+      maxHttpRequestBytes: number;
+      maxHttpResponseBytes: number;
+      maxWebSocketMessageBytes: number;
+    };
   };
   automation: {
     maxConcurrentActions: number;
+    maxActionOutputBytes: number;
   };
   storage: {
     eventLogPath: string;
@@ -474,6 +498,7 @@ export interface ConfigValidationIssue {
     | 'unknown_endpoint'
     | 'unknown_template'
     | 'unknown_source'
+    | 'unsafe_expression'
     | 'unreachable_node'
     | 'no_terminal_path';
   path: string;

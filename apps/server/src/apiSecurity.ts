@@ -12,6 +12,15 @@ export interface ApiAuthorization {
   reason?: string;
 }
 
+class ApiSecurityPolicyError extends Error {
+  readonly statusCode = 400;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'ApiSecurityPolicyError';
+  }
+}
+
 export interface SecurityAuditInput {
   requestId: string;
   remoteAddress: string;
@@ -89,7 +98,33 @@ export class ApiSecurity {
   }
 }
 
-/** Matches exact IPv4/IPv6 values, CIDR ranges, loopback, or explicit '*'. */
+/** Validates the control-plane source and browser-origin trust lists. */
+export function assertValidApiSecurityPolicy(
+  security: AppConfig['security'],
+): void {
+  for (const rule of security.allowedApiSources) {
+    if (!isAddressRule(rule)) {
+      throw new ApiSecurityPolicyError(
+        `Invalid control API source rule: ${rule}`,
+      );
+    }
+  }
+  for (const origin of security.corsOrigins) {
+    const parsed = new URL(origin);
+    if (
+      !['http:', 'https:'].includes(parsed.protocol) ||
+      parsed.origin !== origin ||
+      parsed.username ||
+      parsed.password
+    ) {
+      throw new ApiSecurityPolicyError(
+        `Invalid control API browser origin: ${origin}`,
+      );
+    }
+  }
+}
+
+/** Matches exact IPv4/IPv6 values, CIDR ranges, loopback, or a legacy '*'. */
 export function addressMatchesRule(address: string, rule: string): boolean {
   const normalizedAddress = normalizeAddress(address);
   const normalizedRule = normalizeAddress(rule.trim());
@@ -115,6 +150,18 @@ export function addressMatchesRule(address: string, rule: string): boolean {
   }
   const shift = BigInt(parsedAddress.bits - prefix);
   return parsedAddress.value >> shift === parsedNetwork.value >> shift;
+}
+
+/** Returns whether a source or destination rule has safe IP/CIDR syntax. */
+export function isAddressRule(value: string): boolean {
+  const normalized = normalizeAddress(value.trim());
+  if (normalized.toLowerCase() === 'loopback') return true;
+  const separator = normalized.lastIndexOf('/');
+  if (separator < 0) return isIP(normalized) !== 0;
+  const network = normalized.slice(0, separator);
+  const prefix = Number(normalized.slice(separator + 1));
+  const bits = isIP(network) === 4 ? 32 : isIP(network) === 6 ? 128 : 0;
+  return Number.isInteger(prefix) && prefix >= 0 && prefix <= bits;
 }
 
 function resolveRole(

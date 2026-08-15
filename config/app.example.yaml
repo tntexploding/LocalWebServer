@@ -14,13 +14,51 @@ security:
     - '127.0.0.1'
     - '::1'
   corsOrigins:
+    - 'http://127.0.0.1:4789'
+    - 'http://localhost:4789'
     - 'http://127.0.0.1:5277'
     - 'http://localhost:5277'
   allowedCommandRoots: []
+  allowedExecutables: []
+  commandEnvironmentAllowlist:
+    - 'PATH'
+    - 'PATHEXT'
+    - 'SystemRoot'
+    - 'ComSpec'
+    - 'TEMP'
+    - 'TMP'
+    - 'TMPDIR'
   allowShell: false
+
+network:
+  inbound:
+    allowedSources:
+      - '127.0.0.1'
+      - '::1'
+    allowedOrigins: []
+    maxHttpBodyBytes: 1048576
+    maxWebSocketMessageBytes: 1048576
+    maxWebSocketConnectionsPerEndpoint: 16
+    requestTimeoutMs: 15000
+    headersTimeoutMs: 10000
+    keepAliveTimeoutMs: 5000
+    maxHeadersCount: 100
+  outbound:
+    allowedHostnames:
+      - 'localhost'
+    allowedAddresses:
+      - 'loopback'
+    allowedPorts:
+      - 4789
+      - 7800
+      - 8765
+    maxHttpRequestBytes: 1048576
+    maxHttpResponseBytes: 1048576
+    maxWebSocketMessageBytes: 1048576
 
 automation:
   maxConcurrentActions: 2
+  maxActionOutputBytes: 1048576
 
 storage:
   eventLogPath: 'data/events.jsonl'
