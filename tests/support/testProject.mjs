@@ -38,7 +38,7 @@ export function baseAppConfig(port) {
       readToken: '${secret:readToken}',
       requireTokenForRead: true,
       allowedApiSources: ['127.0.0.1', '::1'],
-      corsOrigins: [`http://127.0.0.1:${port}`, 'http://127.0.0.1:5277'],
+      corsOrigins: [`http://127.0.0.1:${port}`, 'http://127.0.0.1:4177'],
       allowedCommandRoots: ['.'],
       allowedExecutables: [process.execPath],
       commandEnvironmentAllowlist: ['PATH', 'PATHEXT', 'SystemRoot', 'TEMP'],

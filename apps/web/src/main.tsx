@@ -42,9 +42,14 @@ import type {
 } from '@las/core';
 import {translate, type Locale} from './i18n';
 import {EndpointSplitLayout} from './EndpointSplitLayout';
+import {LogSplitLayout} from './LogSplitLayout';
 import {LocaleContext, ResizablePanel} from './ResizablePanel';
 import {ActionSplitLayout} from './ActionSplitLayout';
 import {WorkflowWorkspace} from './WorkflowWorkspace';
+import {
+  collectEndpointMediaCacheInfo,
+  type EndpointMediaCacheInfo,
+} from './endpointMedia';
 import './styles.css';
 
 type AppConfig = LoadedConfig;
@@ -142,6 +147,8 @@ const actionKinds: ActionKind[] = [
   'wait_event',
 ];
 type OverviewRange = '1h' | '1d' | '7d' | 'all';
+type OverviewExecutionView = 'upcoming' | 'recent' | 'failed';
+type OverviewStatusView = 'endpoints' | 'automations' | 'actions';
 interface ActionDraft {
   index: number;
   id: string;
@@ -198,6 +205,9 @@ interface EndpointDraft {
   templateFields: string[];
   templateValues: Record<string, string>;
   headersText: string;
+  testProbePath: string;
+  testSendMethod: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+  testSendPath: string;
   reconnectEnabled: boolean;
   reconnectInitialDelayMs: string;
   reconnectMaxDelayMs: string;
@@ -261,10 +271,13 @@ interface EndpointTestResult {
   message: string;
 }
 interface EndpointTestOptions {
+  mode?: 'probe' | 'send';
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   path?: string;
   body?: unknown;
   useTemplate?: boolean;
+  templateFields?: string[];
+  templateValues?: Record<string, unknown>;
 }
 interface EndpointLogEntry {
   id: string;
@@ -274,10 +287,22 @@ interface EndpointLogEntry {
   color: string;
   level: 'ok' | 'failed' | 'info';
   type: 'test' | 'event';
+  messageType?: EndpointMessageType;
   message: string;
   detail?: string;
   decoded?: DecodedMessage;
+  mediaCache?: EndpointMediaCacheInfo[];
 }
+type EndpointMessageType =
+  | 'text'
+  | 'image'
+  | 'video'
+  | 'file'
+  | 'audio'
+  | 'forward'
+  | 'link'
+  | 'mixed'
+  | 'unknown';
 type EndpointViewMode = 'graph' | 'config';
 type EndpointInspectorMode = 'config' | 'test';
 type EndpointProtocolFilter = 'all' | 'http' | 'ws';
@@ -285,6 +310,7 @@ type EndpointRoleFilter = 'all' | 'server' | 'client';
 type ActionViewMode = 'graph' | 'config';
 type LogViewMode = 'entries' | 'console';
 type ApiFailureKind = 'network' | 'auth' | 'http' | 'parse' | 'unknown';
+type ApiConnectionState = 'online' | 'restricted' | 'offline';
 interface ApiFailure {
   id: string;
   label: string;
@@ -358,7 +384,7 @@ async function fetchJson<T>(
               ? 'auth'
               : 'http',
           status: response.status,
-          reason: `${response.status} ${response.statusText}`,
+          reason: await responseFailureReason(response),
         },
       };
     }
@@ -391,6 +417,73 @@ async function fetchJson<T>(
       },
     };
   }
+}
+
+async function responseFailureReason(response: Response): Promise<string> {
+  const status = `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''}`;
+  try {
+    const body = (await response.text()).trim();
+    if (!body) return status;
+    let detail = body;
+    try {
+      const parsed = JSON.parse(body) as {error?: unknown; message?: unknown};
+      const candidate = parsed.error ?? parsed.message;
+      if (typeof candidate === 'string' && candidate.trim()) {
+        detail = candidate.trim();
+      }
+    } catch {
+      // Plain-text backend errors are already useful diagnostic detail.
+    }
+    const compact = detail.replace(/\s+/gu, ' ').slice(0, 320);
+    return `${status}: ${compact}`;
+  } catch {
+    return status;
+  }
+}
+
+async function fetchConfigMutation(
+  path: string,
+  token: string,
+  body: unknown,
+  t: Translator,
+): Promise<Response> {
+  const url = `${API_BASE}${path}`;
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return await fetch(url, {
+        method: 'PUT',
+        headers: {
+          'content-type': 'application/json',
+          ...(token ? {'x-las-token': token} : {}),
+        },
+        body: JSON.stringify(body),
+      });
+    } catch (error) {
+      lastError = error;
+      if (attempt === 0) await wait(180);
+    }
+  }
+
+  const pageOrigin = window.location.origin;
+  const apiOrigin = new URL(API_BASE, pageOrigin).origin;
+  throw new Error(
+    t(
+      pageOrigin === apiOrigin
+        ? 'error.apiMutationNetwork'
+        : 'error.apiMutationCrossOrigin',
+      {
+        path,
+        api: API_BASE,
+        origin: pageOrigin,
+        reason: errorMessage(lastError),
+      },
+    ),
+  );
+}
+
+function wait(delayMs: number): Promise<void> {
+  return new Promise(resolve => window.setTimeout(resolve, delayMs));
 }
 
 function errorMessage(error: unknown): string {
@@ -434,8 +527,10 @@ function App() {
     [],
   );
   const [status, setStatus] = React.useState(t('status.ready'));
+  const refreshRequestId = React.useRef(0);
 
   const refresh = React.useCallback(async () => {
+    const requestId = ++refreshRequestId.current;
     const rawRequest = token.trim()
       ? fetchJson<RawConfig>(
           'raw',
@@ -473,6 +568,8 @@ function App() {
         token,
       ),
     ]);
+
+    if (requestId !== refreshRequestId.current) return;
 
     const failures = results
       .filter(
@@ -547,6 +644,14 @@ function App() {
     else sessionStorage.removeItem('las-token');
   }
 
+  async function acceptConfigResponse(response: Response): Promise<AppConfig> {
+    if (!response.ok) throw new Error(await responseFailureReason(response));
+    const saved = (await response.json()) as AppConfig;
+    refreshRequestId.current += 1;
+    setConfig(saved);
+    return saved;
+  }
+
   async function openConfigHistory() {
     const response = await fetch(`${API_BASE}/api/config/history`, {
       headers: {'x-las-token': token},
@@ -573,14 +678,13 @@ function App() {
 
   async function saveConfig(name: keyof RawConfig, content: string) {
     setStatus(t('status.saving', {name}));
-    const response = await fetch(`${API_BASE}/api/config/raw/${name}`, {
-      method: 'PUT',
-      headers: {'content-type': 'application/json', 'x-las-token': token},
-      body: JSON.stringify({content}),
-    });
-    if (!response.ok) {
-      throw new Error(await response.text());
-    }
+    const response = await fetchConfigMutation(
+      `/api/config/raw/${name}`,
+      token,
+      {content},
+      t,
+    );
+    await acceptConfigResponse(response);
     await refresh();
     queueFollowupRefresh();
   }
@@ -590,40 +694,39 @@ function App() {
     id: string,
   ) {
     setStatus(t('status.savingEndpoint', {id}));
-    const endpointResponse = await fetch(`${API_BASE}/api/endpoints`, {
-      method: 'PUT',
-      headers: {'content-type': 'application/json', 'x-las-token': token},
-      body: JSON.stringify(endpoints),
-    });
-    if (!endpointResponse.ok) {
-      throw new Error(await endpointResponse.text());
-    }
+    const endpointResponse = await fetchConfigMutation(
+      '/api/endpoints',
+      token,
+      endpoints,
+      t,
+    );
+    const saved = await acceptConfigResponse(endpointResponse);
     await refresh();
     queueFollowupRefresh();
+    return saved.endpoints;
   }
 
   async function saveRuleSetup(rules: AppConfig['rules'], id: string) {
     setStatus(t('status.savingRule', {id}));
-    const response = await fetch(`${API_BASE}/api/rules`, {
-      method: 'PUT',
-      headers: {'content-type': 'application/json', 'x-las-token': token},
-      body: JSON.stringify(rules),
-    });
-    if (!response.ok) throw new Error(await response.text());
+    const response = await fetchConfigMutation('/api/rules', token, rules, t);
+    const saved = await acceptConfigResponse(response);
     await refresh();
     queueFollowupRefresh();
+    return saved.rules;
   }
 
   async function saveActionSetup(actions: AppConfig['actions'], id: string) {
     setStatus(t('status.savingAction', {id}));
-    const response = await fetch(`${API_BASE}/api/actions`, {
-      method: 'PUT',
-      headers: {'content-type': 'application/json', 'x-las-token': token},
-      body: JSON.stringify(actions),
-    });
-    if (!response.ok) throw new Error(await response.text());
+    const response = await fetchConfigMutation(
+      '/api/actions',
+      token,
+      actions,
+      t,
+    );
+    const saved = await acceptConfigResponse(response);
     await refresh();
     queueFollowupRefresh();
+    return saved.actions;
   }
 
   async function testEndpoint(
@@ -647,7 +750,7 @@ function App() {
     return result;
   }
 
-  async function runAction(id: string) {
+  async function runAction(id: string): Promise<ActionResult> {
     setStatus(t('status.queued', {id}));
     const response = await fetch(`${API_BASE}/api/actions/${id}/run`, {
       method: 'POST',
@@ -656,8 +759,10 @@ function App() {
     if (!response.ok) {
       throw new Error(await response.text());
     }
+    const result = (await response.json()) as ActionResult;
     await refresh();
     queueFollowupRefresh();
+    return result;
   }
 
   async function cancelRun(id: string) {
@@ -732,13 +837,24 @@ function App() {
     nav.findIndex(item => item.id === active),
   );
   const activeSectionCode = `${String(activeIndex + 1).padStart(2, '0')} / ${String(nav.length).padStart(2, '0')}`;
+  const connectionState: ApiConnectionState = !health?.ok
+    ? 'offline'
+    : apiFailures.some(failure => failure.kind === 'auth')
+      ? 'restricted'
+      : 'online';
+  const connectionLabel =
+    connectionState === 'restricted'
+      ? t('status.authorizationRequired')
+      : connectionState === 'online'
+        ? t('status.backendOnline')
+        : t('status.backendOffline');
 
   return (
     <LocaleContext.Provider value={locale}>
       <div
         className="shell"
         data-page={active}
-        data-connection={health?.ok ? 'online' : 'offline'}
+        data-connection={connectionState}
       >
         <aside className="sidebar">
           <div className="brand">
@@ -772,18 +888,11 @@ function App() {
               );
             })}
           </nav>
-          <div
-            className="sidebarFoot"
-            data-state={health?.ok ? 'online' : 'offline'}
-          >
+          <div className="sidebarFoot" data-state={connectionState}>
             <CircleDot size={14} />
             <span>
               <small>CORE LINK</small>
-              <strong>
-                {health?.ok
-                  ? t('status.backendOnline')
-                  : t('status.backendOffline')}
-              </strong>
+              <strong>{connectionLabel}</strong>
             </span>
           </div>
         </aside>
@@ -839,6 +948,7 @@ function App() {
                 <label>
                   <span>{t('field.apiToken')}</span>
                   <input
+                    id="api-token"
                     type="password"
                     value={token}
                     onChange={event => saveToken(event.target.value)}
@@ -862,6 +972,7 @@ function App() {
               failures={apiFailures}
               t={t}
               onRetry={() => void refresh()}
+              onAuthorize={() => document.getElementById('api-token')?.focus()}
             />
           )}
 
@@ -872,6 +983,7 @@ function App() {
               events={events}
               runs={runs}
               queue={queue}
+              connectionState={connectionState}
               t={t}
             />
           )}
@@ -900,10 +1012,12 @@ function App() {
               templates={templates}
               runs={runs}
               activeRuns={[...(queue?.running ?? []), ...(queue?.queued ?? [])]}
+              schedules={queue?.schedules ?? []}
               t={t}
               onSaveRules={(rules, id) => saveRuleSetup(rules, id)}
               onSaveRaw={content => saveConfig('rules', content)}
               onTest={eventText => testRules(eventText)}
+              onRunAction={id => runAction(id)}
             />
           )}
           {active === 'actions' && config && (
@@ -917,7 +1031,9 @@ function App() {
               t={t}
               onSaveActions={(actions, id) => saveActionSetup(actions, id)}
               onSave={content => saveConfig('actions', content)}
-              onRun={id => runAction(id)}
+              onRun={async id => {
+                await runAction(id);
+              }}
               onCancel={id =>
                 cancelRun(id).catch(error => setStatus(error.message))
               }
@@ -1125,6 +1241,7 @@ function Dashboard({
   events,
   runs,
   queue,
+  connectionState,
   t,
 }: {
   config: AppConfig | null;
@@ -1132,9 +1249,14 @@ function Dashboard({
   events: EventRow[];
   runs: RunRow[];
   queue: QueueSnapshot | null;
+  connectionState: ApiConnectionState;
   t: Translator;
 }) {
   const [range, setRange] = React.useState<OverviewRange>('1h');
+  const [executionView, setExecutionView] =
+    React.useState<OverviewExecutionView>('upcoming');
+  const [statusView, setStatusView] =
+    React.useState<OverviewStatusView>('endpoints');
   const endpointStates = config
     ? [
         ...config.endpoints.httpServers.map(endpoint => ({
@@ -1202,44 +1324,58 @@ function Dashboard({
   const successRate = settledRuns.length
     ? Math.round((successfulRuns / settledRuns.length) * 100)
     : 100;
-  const failedRuns = periodRuns
+  const sortedPeriodRuns = [...periodRuns].sort((left, right) =>
+    runSortTime(right).localeCompare(runSortTime(left)),
+  );
+  const recentRuns = sortedPeriodRuns.slice(0, 12);
+  const failedRuns = sortedPeriodRuns
     .filter(run => run.status === 'failed' || run.ok === false)
-    .slice(0, 6);
-  const upcomingActions = [
+    .slice(0, 12);
+  const allUpcomingActions = [
     ...(queue?.queued ?? []),
     ...(queue?.running ?? []),
-  ].slice(0, 8);
-  const scheduledAutomations = (queue?.schedules ?? []).slice(0, 8);
+  ];
+  const upcomingActions = allUpcomingActions.slice(0, 8);
+  const allScheduledAutomations = queue?.schedules ?? [];
+  const scheduledAutomations = allScheduledAutomations.slice(0, 8);
+  const latestRuns = [...runs].sort((left, right) =>
+    runSortTime(right).localeCompare(runSortTime(left)),
+  );
   const trafficBuckets = buildTrafficBuckets(periodEvents, periodRuns, range);
   const peakTraffic = Math.max(
     1,
     ...trafficBuckets.map(bucket => bucket.received + bucket.sent),
   );
+  const hasTraffic = receivedMessages + sentMessages > 0;
   const latestActivity = latestActivityTime(events, runs);
+  const executionCounts: Record<OverviewExecutionView, number> = {
+    upcoming: allUpcomingActions.length + allScheduledAutomations.length,
+    recent: recentRuns.length,
+    failed: failedRuns.length,
+  };
+  const statusCounts: Record<OverviewStatusView, string> = {
+    endpoints: `${endpointCount}/${endpointStates.length}`,
+    automations: `${activeAutomations}/${config?.rules.length ?? 0}`,
+    actions: String(config?.actions.length ?? 0),
+  };
 
   return (
     <section className="overviewPage">
-      <div className="overviewTop">
-        <ResizablePanel
-          storageKey="overview-identity"
-          className="projectIntro"
-          resetLabel={t('common.resetPanelSize')}
-        >
+      <section className="overviewSummary">
+        <div className="overviewPrimary">
           <div className="projectLogoPlaceholder">LAS</div>
           <div className="overviewIdentity">
             <span>{t('overview.projectCategory')}</span>
             <h2>{t('overview.projectName')}</h2>
             <p>{t('overview.projectDescription')}</p>
-            <div className="statusRibbon">
-              <span className={health?.ok ? 'online' : 'offline'}>
+            <div className="overviewStatusLine">
+              <span className={connectionState}>
                 <CircleDot size={13} />
-                {health?.ok
-                  ? t('status.backendOnline')
-                  : t('status.backendOffline')}
-              </span>
-              <span>
-                <RefreshCw size={13} />
-                {t('overview.autoRefresh')}
+                {connectionState === 'restricted'
+                  ? t('status.authorizationShort')
+                  : connectionState === 'online'
+                    ? t('status.backendOnline')
+                    : t('status.backendOffline')}
               </span>
               <span>
                 <Activity size={13} />
@@ -1251,236 +1387,404 @@ function Dashboard({
               </span>
             </div>
           </div>
-        </ResizablePanel>
-        <ResizablePanel
-          storageKey="overview-service"
-          className="serviceOverview"
-          resetLabel={t('common.resetPanelSize')}
-        >
-          <div className="overviewSectionHead">
+        </div>
+        <div className="overviewSignalBoard">
+          <div className="overviewSignalHead">
             <div>
               <span>{t('overview.serviceOverview')}</span>
               <strong>{t('overview.liveSnapshot')}</strong>
             </div>
-            <Activity size={18} />
+            <span className="overviewRefreshState">
+              <RefreshCw size={13} />
+              {t('overview.autoRefresh')}
+            </span>
           </div>
-          <div className="serviceMetrics">
+          <dl className="overviewSignalList">
             <div>
-              <span>{t('overview.onlineEndpoints')}</span>
-              <strong>{endpointCount}</strong>
+              <dt>{t('overview.onlineEndpoints')}</dt>
+              <dd>
+                <strong>{endpointCount}</strong>
+                <span>/ {endpointStates.length}</span>
+              </dd>
+              <small>
+                {t('overview.listeners')} {health?.listeners?.length ?? 0}
+              </small>
             </div>
             <div>
-              <span>{t('overview.messagesObserved')}</span>
-              <strong>{events.length}</strong>
+              <dt>{t('overview.traffic')}</dt>
+              <dd>
+                <strong>{receivedMessages + sentMessages}</strong>
+              </dd>
+              <small>
+                <span>
+                  {t('overview.received')} {receivedMessages}
+                </span>
+                <span>
+                  {t('overview.sent')} {sentMessages}
+                </span>
+                <span>{t(`overview.range.${range}`)}</span>
+              </small>
             </div>
             <div>
-              <span>{t('overview.activeAutomation')}</span>
-              <strong>{activeAutomations}</strong>
+              <dt>{t('overview.activeAutomation')}</dt>
+              <dd>
+                <strong>{activeAutomations}</strong>
+              </dd>
+              <small>
+                <span>
+                  {t('overview.automationActions')} {automationActions}
+                </span>
+                <span>
+                  {t('overview.completedRules')} {completedRules}
+                </span>
+                <span className="healthy">
+                  {t('overview.successRate')} {successRate}%
+                </span>
+              </small>
             </div>
-            <div>
-              <span>{t('overview.listeners')}</span>
-              <strong>{health?.listeners?.length ?? 0}</strong>
-            </div>
-          </div>
-        </ResizablePanel>
-      </div>
-      <div className="overviewMetricStrip">
-        {[
-          [t('overview.receivedMessages'), receivedMessages],
-          [t('overview.sentMessages'), sentMessages],
-          [t('overview.automationActions'), automationActions],
-          [t('overview.completedRules'), completedRules],
-          [t('overview.successRate'), `${successRate}%`],
-        ].map(([label, value], index) => (
-          <ResizablePanel
-            storageKey={`overview-metric-${index}`}
-            className="runtimeMetric"
-            resetLabel={t('common.resetPanelSize')}
-            key={String(label)}
-          >
-            <span>{label}</span>
-            <strong>{value}</strong>
-          </ResizablePanel>
-        ))}
-      </div>
+          </dl>
+        </div>
+      </section>
       <div className="overviewOperationsGrid">
-        <div className="overviewMonitorColumn">
-          <ResizablePanel
-            storageKey="overview-traffic"
-            className="monitorModule trafficModule"
-            resetLabel={t('common.resetPanelSize')}
-          >
+        <div className="overviewMonitorColumn overviewPrimaryColumn">
+          <section className="monitorModule trafficModule">
             <div className="monitoringHead">
               <div>
                 <span>{t('overview.trafficDescription')}</span>
                 <strong>{t('overview.traffic')}</strong>
               </div>
-              <div className="rangeSwitch">
-                {(['1h', '1d', '7d', 'all'] as OverviewRange[]).map(item => (
-                  <button
-                    key={item}
-                    className={range === item ? 'active' : ''}
-                    onClick={() => setRange(item)}
-                  >
-                    {t(`overview.range.${item}`)}
-                  </button>
-                ))}
+              <div className="trafficControls">
+                <div className="trafficLegend">
+                  <span className="received">
+                    {t('overview.received')}
+                    {hasTraffic && <strong>{receivedMessages}</strong>}
+                  </span>
+                  <span className="sent">
+                    {t('overview.sent')}
+                    {hasTraffic && <strong>{sentMessages}</strong>}
+                  </span>
+                </div>
+                <div className="rangeSwitch">
+                  {(['1h', '1d', '7d', 'all'] as OverviewRange[]).map(item => (
+                    <button
+                      key={item}
+                      className={range === item ? 'active' : ''}
+                      onClick={() => setRange(item)}
+                    >
+                      {t(`overview.range.${item}`)}
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
-            <div className="trafficLegend">
-              <span className="received">{t('overview.received')}</span>
-              <span className="sent">{t('overview.sent')}</span>
             </div>
             <div className="trafficChart">
-              {trafficBuckets.map((bucket, index) => (
-                <div
-                  className="trafficColumn"
-                  title={`${bucket.label}: ${t('overview.received')} ${bucket.received}, ${t('overview.sent')} ${bucket.sent}`}
-                  key={`${bucket.label}-${index}`}
-                >
-                  <div className="trafficBars">
-                    <i
-                      className="received"
-                      style={{
-                        height: `${(bucket.received / peakTraffic) * 100}%`,
-                      }}
-                    />
-                    <i
-                      className="sent"
-                      style={{height: `${(bucket.sent / peakTraffic) * 100}%`}}
-                    />
+              {hasTraffic ? (
+                trafficBuckets.map((bucket, index) => (
+                  <div
+                    className="trafficColumn"
+                    title={`${bucket.label}: ${t('overview.received')} ${bucket.received}, ${t('overview.sent')} ${bucket.sent}`}
+                    key={`${bucket.label}-${index}`}
+                  >
+                    <span className="trafficBucketCount">
+                      {bucket.received + bucket.sent || ''}
+                    </span>
+                    <div className="trafficBars">
+                      <i
+                        className="received"
+                        style={{
+                          height: `${(bucket.received / peakTraffic) * 100}%`,
+                        }}
+                      />
+                      <i
+                        className="sent"
+                        style={{
+                          height: `${(bucket.sent / peakTraffic) * 100}%`,
+                        }}
+                      />
+                    </div>
+                    <small>{bucket.label}</small>
                   </div>
-                  <small>{bucket.label}</small>
-                </div>
-              ))}
-            </div>
-          </ResizablePanel>
-          <ResizablePanel
-            storageKey="overview-queue"
-            className="upcomingActions"
-            resetLabel={t('common.resetPanelSize')}
-          >
-            <div className="moduleHead">
-              <div>
-                <span>{t('overview.queueDescription')}</span>
-                <strong>{t('overview.upcomingActions')}</strong>
-              </div>
-              <code>
-                {upcomingActions.length + scheduledAutomations.length}
-              </code>
-            </div>
-            <div className="overviewActionList">
-              {upcomingActions.length === 0 &&
-                scheduledAutomations.length === 0 && (
-                  <div className="empty">{t('overview.noUpcomingActions')}</div>
-                )}
-              {scheduledAutomations.map(schedule => (
-                <details
-                  className="actionCard queued"
-                  key={`${schedule.ruleId}-${schedule.nextRunAt}`}
-                >
-                  <summary>
-                    <div>
-                      <strong>{schedule.ruleId}</strong>
-                      <span>{t(`overview.schedule.${schedule.mode}`)}</span>
-                    </div>
-                    <code>{new Date(schedule.nextRunAt).toLocaleString()}</code>
-                  </summary>
-                  <pre>{JSON.stringify(schedule, null, 2)}</pre>
-                </details>
-              ))}
-              {upcomingActions.map(run => (
-                <details className={`actionCard ${run.status}`} key={run.id}>
-                  <summary>
-                    <div>
-                      <strong>{run.actionId}</strong>
-                      <span>{t(`run.${run.status}`)}</span>
-                    </div>
-                    <code>
-                      {run.queuedAt
-                        ? new Date(run.queuedAt).toLocaleTimeString()
-                        : t('common.notAvailable')}
-                    </code>
-                  </summary>
-                  <pre>{JSON.stringify(run, null, 2)}</pre>
-                </details>
-              ))}
-            </div>
-          </ResizablePanel>
-        </div>
-        <div className="overviewMonitorColumn">
-          <ResizablePanel
-            storageKey="overview-endpoints"
-            className="monitorModule endpointHealthModule"
-            resetLabel={t('common.resetPanelSize')}
-          >
-            <div className="moduleHead">
-              <div>
-                <span>{t('overview.endpointHealthDescription')}</span>
-                <strong>{t('overview.endpointHealth')}</strong>
-              </div>
-              <code>
-                {endpointCount}/{endpointStates.length}
-              </code>
-            </div>
-            <div className="overviewEndpointList">
-              {endpointStates.slice(0, 8).map(endpoint => (
-                <div
-                  className={endpoint.enabled ? '' : 'disabled'}
-                  key={`${endpoint.type}-${endpoint.id}`}
-                >
-                  <i />
+                ))
+              ) : (
+                <div className="trafficEmpty">
                   <span>
-                    <strong>{endpoint.id}</strong>
-                    <small>{endpoint.type}</small>
+                    <strong>{receivedMessages}</strong>
+                    {t('overview.received')}
                   </span>
-                  <code>{endpoint.target}</code>
-                  <em>
-                    {t(endpoint.enabled ? 'common.enabled' : 'common.disabled')}
-                  </em>
+                  <span>
+                    <strong>{sentMessages}</strong>
+                    {t('overview.sent')}
+                  </span>
+                  <small>{t('overview.noTraffic')}</small>
                 </div>
-              ))}
-              {endpointStates.length === 0 && (
-                <div className="empty">{t('overview.noEndpoints')}</div>
               )}
             </div>
-          </ResizablePanel>
-          <ResizablePanel
-            storageKey="overview-failures"
-            className="monitorModule failureModule"
-            resetLabel={t('common.resetPanelSize')}
-          >
+          </section>
+          <section className="monitorModule executionOverviewModule">
             <div className="moduleHead">
               <div>
-                <span>{t('overview.failureDescription')}</span>
-                <strong>{t('overview.recentFailures')}</strong>
+                <span>{t('overview.executionDescription')}</span>
+                <strong>{t('overview.executionOverview')}</strong>
               </div>
-              <code>{failedRuns.length}</code>
+              <code>{executionCounts[executionView]}</code>
             </div>
-            <div className="overviewFailureList">
-              {failedRuns.length === 0 && (
-                <div className="empty healthy">{t('overview.noFailures')}</div>
-              )}
-              {failedRuns.map(run => (
-                <div key={run.id}>
-                  <XCircle size={15} />
-                  <span>
-                    <strong>{run.actionId}</strong>
-                    <small>{run.error ?? t(`run.${run.status}`)}</small>
-                  </span>
-                  <time>
-                    {formatOptionalTime(
-                      run.finishedAt ?? run.startedAt ?? run.queuedAt,
+            <div
+              className="overviewTabs executionOverviewTabs"
+              role="tablist"
+              aria-label={t('overview.executionOverview')}
+            >
+              {(
+                ['upcoming', 'recent', 'failed'] as OverviewExecutionView[]
+              ).map(view => (
+                <button
+                  key={view}
+                  type="button"
+                  role="tab"
+                  aria-selected={executionView === view}
+                  className={executionView === view ? 'active' : ''}
+                  onClick={() => setExecutionView(view)}
+                >
+                  <span>{t(`overview.execution.${view}`)}</span>
+                  <code>{executionCounts[view]}</code>
+                </button>
+              ))}
+            </div>
+            <div
+              className="overviewExecutionList"
+              role="tabpanel"
+              aria-label={t(`overview.execution.${executionView}`)}
+            >
+              {executionView === 'upcoming' && (
+                <>
+                  {upcomingActions.length === 0 &&
+                    scheduledAutomations.length === 0 && (
+                      <div className="empty">
+                        {t('overview.noUpcomingActions')}
+                      </div>
                     )}
-                  </time>
-                </div>
+                  {scheduledAutomations.map(schedule => (
+                    <details
+                      className="actionCard queued"
+                      key={`${schedule.ruleId}-${schedule.nextRunAt}`}
+                    >
+                      <summary>
+                        <div>
+                          <strong>{schedule.ruleId}</strong>
+                          <span>{t(`overview.schedule.${schedule.mode}`)}</span>
+                        </div>
+                        <code>
+                          {new Date(schedule.nextRunAt).toLocaleString()}
+                        </code>
+                      </summary>
+                      <pre>{JSON.stringify(schedule, null, 2)}</pre>
+                    </details>
+                  ))}
+                  {upcomingActions.map(run => (
+                    <OverviewRunCard run={run} t={t} key={run.id} />
+                  ))}
+                </>
+              )}
+              {executionView === 'recent' && (
+                <>
+                  {recentRuns.length === 0 && (
+                    <div className="empty">
+                      {t('overview.noRecentExecutions')}
+                    </div>
+                  )}
+                  {recentRuns.map(run => (
+                    <OverviewRunCard run={run} t={t} key={run.id} />
+                  ))}
+                </>
+              )}
+              {executionView === 'failed' && (
+                <>
+                  {failedRuns.length === 0 && (
+                    <div className="empty healthy">
+                      {t('overview.noFailures')}
+                    </div>
+                  )}
+                  {failedRuns.map(run => (
+                    <OverviewRunCard run={run} t={t} key={run.id} />
+                  ))}
+                </>
+              )}
+            </div>
+          </section>
+        </div>
+        <div className="overviewMonitorColumn overviewSideColumn">
+          <section className="monitorModule overviewStatusModule">
+            <div className="moduleHead">
+              <div>
+                <span>{t('overview.statusDescription')}</span>
+                <strong>{t('overview.statusOverview')}</strong>
+              </div>
+              <code>{statusCounts[statusView]}</code>
+            </div>
+            <div
+              className="overviewTabs overviewStatusTabs"
+              role="tablist"
+              aria-label={t('overview.statusOverview')}
+            >
+              {(
+                ['endpoints', 'automations', 'actions'] as OverviewStatusView[]
+              ).map(view => (
+                <button
+                  key={view}
+                  type="button"
+                  role="tab"
+                  aria-selected={statusView === view}
+                  className={statusView === view ? 'active' : ''}
+                  onClick={() => setStatusView(view)}
+                >
+                  <span>{t(`overview.status.${view}`)}</span>
+                  <code>{statusCounts[view]}</code>
+                </button>
               ))}
             </div>
-          </ResizablePanel>
+            <div
+              className="overviewStatusList"
+              role="tabpanel"
+              aria-label={t(`overview.status.${statusView}`)}
+            >
+              {statusView === 'endpoints' && (
+                <>
+                  {endpointStates.map(endpoint => (
+                    <div
+                      className={endpoint.enabled ? '' : 'disabled'}
+                      key={`${endpoint.type}-${endpoint.id}`}
+                    >
+                      <i />
+                      <span>
+                        <strong>{endpoint.id}</strong>
+                        <small>{endpoint.type}</small>
+                      </span>
+                      <code>{endpoint.target}</code>
+                      <em>
+                        {t(
+                          endpoint.enabled
+                            ? 'common.enabled'
+                            : 'common.disabled',
+                        )}
+                      </em>
+                    </div>
+                  ))}
+                  {endpointStates.length === 0 && (
+                    <div className="empty">{t('overview.noEndpoints')}</div>
+                  )}
+                </>
+              )}
+              {statusView === 'automations' && (
+                <>
+                  {config?.rules.map(rule => {
+                    const schedule = allScheduledAutomations.find(
+                      item => item.ruleId === rule.id,
+                    );
+                    const latestRun = latestRuns.find(
+                      run => run.ruleId === rule.id,
+                    );
+                    return (
+                      <div
+                        className={rule.enabled ? '' : 'disabled'}
+                        key={rule.id}
+                      >
+                        <i />
+                        <span>
+                          <strong>{rule.id}</strong>
+                          <small>
+                            {rule.description ??
+                              t('overview.automationDescriptionFallback')}
+                          </small>
+                        </span>
+                        <code>
+                          {schedule
+                            ? t('overview.nextRunAt', {
+                                time: new Date(
+                                  schedule.nextRunAt,
+                                ).toLocaleString(),
+                              })
+                            : latestRun
+                              ? t('overview.lastRunAt', {
+                                  time: formatOptionalTime(
+                                    runSortTime(latestRun),
+                                  ),
+                                })
+                              : t('overview.noExecutionRecord')}
+                        </code>
+                        <em>
+                          {t(
+                            rule.enabled ? 'common.enabled' : 'common.disabled',
+                          )}
+                        </em>
+                      </div>
+                    );
+                  })}
+                  {(config?.rules.length ?? 0) === 0 && (
+                    <div className="empty">{t('overview.noAutomations')}</div>
+                  )}
+                </>
+              )}
+              {statusView === 'actions' && (
+                <>
+                  {config?.actions.map(action => {
+                    const latestRun = latestRuns.find(
+                      run => run.actionId === action.id,
+                    );
+                    return (
+                      <div
+                        className={
+                          latestRun ? `run-${latestRun.status}` : 'idle'
+                        }
+                        key={action.id}
+                      >
+                        <i />
+                        <span>
+                          <strong>{action.id}</strong>
+                          <small>{actionTypeLabel(action.type, t)}</small>
+                        </span>
+                        <code>{actionTargetSummary(action)}</code>
+                        <em>
+                          {latestRun
+                            ? t(`run.${latestRun.status}`)
+                            : t('action.neverRun')}
+                        </em>
+                      </div>
+                    );
+                  })}
+                  {(config?.actions.length ?? 0) === 0 && (
+                    <div className="empty">{t('overview.noActions')}</div>
+                  )}
+                </>
+              )}
+            </div>
+          </section>
         </div>
       </div>
     </section>
   );
+}
+
+function OverviewRunCard({run, t}: {run: RunRow; t: Translator}) {
+  return (
+    <details className={`actionCard ${run.status}`}>
+      <summary>
+        <div>
+          <strong>{run.actionId}</strong>
+          <span>
+            {run.ruleId ??
+              (run.actionType
+                ? actionTypeLabel(run.actionType, t)
+                : t('common.notAvailable'))}
+          </span>
+        </div>
+        <code>{formatOptionalTime(runSortTime(run))}</code>
+      </summary>
+      <pre>{JSON.stringify(run, null, 2)}</pre>
+    </details>
+  );
+}
+
+function runSortTime(run: RunRow): string {
+  return run.finishedAt ?? run.startedAt ?? run.queuedAt ?? '';
 }
 
 interface TrafficBucket {
@@ -1576,47 +1880,99 @@ function DiagnosticsBanner({
   failures,
   t,
   onRetry,
+  onAuthorize,
 }: {
   failures: ApiFailure[];
   t: Translator;
   onRetry: () => void;
+  onAuthorize: () => void;
 }) {
+  const authorizationRequired = failures.every(
+    failure => failure.kind === 'auth',
+  );
+  const statuses = [
+    ...new Set(
+      failures.map(failure =>
+        failure.status ? `HTTP ${failure.status}` : failure.kind,
+      ),
+    ),
+  ].join(' / ');
+  const commandUrl = failures[0]?.url ?? `${API_BASE}/api/health`;
   return (
-    <section className="diagnosticsPanel">
+    <section
+      className="diagnosticsPanel"
+      data-kind={authorizationRequired ? 'auth' : 'failure'}
+    >
       <div className="diagnosticsHead">
         <div>
-          <h2>{t('diagnostics.title')}</h2>
-          <p>{t('diagnostics.summary')}</p>
+          <h2>
+            {t(
+              authorizationRequired
+                ? 'diagnostics.authTitle'
+                : 'diagnostics.title',
+            )}
+          </h2>
+          <p>
+            {t(
+              authorizationRequired
+                ? 'diagnostics.authSummary'
+                : 'diagnostics.summary',
+            )}
+          </p>
         </div>
-        <button onClick={onRetry}>{t('common.retry')}</button>
+        <div className="diagnosticsHeadActions">
+          {authorizationRequired && (
+            <button onClick={onAuthorize}>
+              <ShieldCheck size={16} />
+              {t('diagnostics.enterToken')}
+            </button>
+          )}
+          <button onClick={onRetry}>
+            <RefreshCw size={16} />
+            {t('common.retry')}
+          </button>
+        </div>
       </div>
-      <div className="diagnosticsMeta">
-        <span>{t('diagnostics.backend')}</span>
-        <code>{API_BASE}</code>
-      </div>
-      <div className="diagnosticsList">
-        {failures.map(failure => (
-          <details key={`${failure.id}-${failure.url}`}>
-            <summary>
-              <span>{failure.label}</span>
-              <code>
-                {failure.status ? `HTTP ${failure.status}` : failure.kind}
-              </code>
-            </summary>
-            <div className="diagnosticsDetails">
-              <label>{t('diagnostics.failedEndpoint')}</label>
-              <code>{failure.url}</code>
-              <label>{t('diagnostics.reason')}</label>
-              <span>{failure.reason}</span>
-              <label>{t('diagnostics.suggestion')}</label>
-              <span>{diagnosticSuggestion(failure.kind, t)}</span>
-            </div>
-          </details>
-        ))}
-      </div>
-      <code className="diagnosticsCommand">
-        {t('diagnostics.checkCommand', {url: `${API_BASE}/api/health`})}
-      </code>
+      <details className="diagnosticsGroup">
+        <summary>
+          <span>{t('diagnostics.failureCount', {count: failures.length})}</span>
+          <code>{statuses}</code>
+        </summary>
+        <div className="diagnosticsBody">
+          <div className="diagnosticsMeta">
+            <span>{t('diagnostics.backend')}</span>
+            <code>{API_BASE}</code>
+          </div>
+          <div className="diagnosticsList">
+            {failures.map(failure => (
+              <details key={`${failure.id}-${failure.url}`}>
+                <summary>
+                  <span>{failure.label}</span>
+                  <code>
+                    {failure.status ? `HTTP ${failure.status}` : failure.kind}
+                  </code>
+                </summary>
+                <div className="diagnosticsDetails">
+                  <label>{t('diagnostics.failedEndpoint')}</label>
+                  <code>{failure.url}</code>
+                  <label>{t('diagnostics.reason')}</label>
+                  <span>{failure.reason}</span>
+                  <label>{t('diagnostics.suggestion')}</label>
+                  <span>{diagnosticSuggestion(failure.kind, t)}</span>
+                </div>
+              </details>
+            ))}
+          </div>
+          <code className="diagnosticsCommand">
+            {t(
+              authorizationRequired
+                ? 'diagnostics.authCheckCommand'
+                : 'diagnostics.checkCommand',
+              {url: commandUrl},
+            )}
+          </code>
+        </div>
+      </details>
     </section>
   );
 }
@@ -1639,7 +1995,7 @@ function EndpointsPanel({
   onSaveEndpoints: (
     endpoints: AppConfig['endpoints'],
     id: string,
-  ) => Promise<void>;
+  ) => Promise<AppConfig['endpoints']>;
   onTestEndpoint: (
     kind: EndpointKind,
     id: string,
@@ -1801,6 +2157,11 @@ function EndpointsPanel({
               draft.templateFields,
             )
           : undefined,
+        test: {
+          probePath: parsePath(draft.testProbePath, t),
+          sendMethod: draft.testSendMethod,
+          sendPath: parsePath(draft.testSendPath, t),
+        },
       };
       if (draft.index < 0) next.httpClients.push(value);
       else next.httpClients[draft.index] = value;
@@ -1824,10 +2185,12 @@ function EndpointsPanel({
       if (draft.index < 0) next.wsClients.push(value);
       else next.wsClients[draft.index] = value;
     }
-    await onSaveEndpoints(next, draft.id);
+    const savedId = draft.id.trim();
+    const savedEndpoints = await onSaveEndpoints(next, savedId);
     setEditing({
       ...draft,
-      index: endpointIndexByKind(next, draft.kind, draft.id),
+      id: savedId,
+      index: endpointIndexByKind(savedEndpoints, draft.kind, savedId),
     });
   }
 
@@ -2026,6 +2389,7 @@ function EndpointsPanel({
                 ) : (
                   <EndpointTestPanel
                     draft={editing}
+                    templates={templates}
                     t={t}
                     onTest={options =>
                       runEndpointTest(editing.kind, editing.id, options)
@@ -2300,11 +2664,11 @@ function EndpointLogList({
             </span>
             <span>
               <small>{t('field.type')}</small>
-              <code>{t(`log.${log.type}`)}</code>
+              <code>{formatEndpointLogType(log, t)}</code>
             </span>
             <span>
               <small>{t('field.content')}</small>
-              <strong>{endpointLogPreview(log)}</strong>
+              <strong>{endpointLogPreview(log, t)}</strong>
             </span>
             <span>
               <small>{t('field.source')}</small>
@@ -2327,6 +2691,9 @@ function EndpointLogList({
               {formatTemplateErrors(log.decoded)}
             </small>
           )}
+          {log.mediaCache && log.mediaCache.length > 0 && (
+            <EndpointMediaCacheDetails media={log.mediaCache} t={t} />
+          )}
           {endpointLogImageUrl(log) && (
             <a
               className="endpointImageUrl"
@@ -2347,44 +2714,84 @@ function EndpointLogList({
 
 function EndpointTestPanel({
   draft,
+  templates,
   t,
   onTest,
 }: {
   draft: EndpointDraft;
+  templates: MessageTemplateSummary[];
   t: Translator;
   onTest: (options: EndpointTestOptions) => Promise<EndpointTestResult>;
 }) {
+  const isHttpClient = draft.kind === 'httpClient';
   const isHttp = draft.kind === 'httpServer' || draft.kind === 'httpClient';
-  const [method, setMethod] =
-    React.useState<EndpointTestOptions['method']>('GET');
-  const [path, setPath] = React.useState('/api/health');
+  const selectedTemplate = templates.find(
+    template => template.name === draft.template,
+  );
+  const configuredTemplateFields =
+    selectedTemplate?.fields.filter(
+      field =>
+        field.roles.send &&
+        (field.required || draft.templateFields.includes(field.path)),
+    ) ?? [];
+  const [method, setMethod] = React.useState<EndpointTestOptions['method']>(
+    draft.testSendMethod,
+  );
+  const [probePath, setProbePath] = React.useState(draft.testProbePath);
+  const [sendPath, setSendPath] = React.useState(draft.testSendPath);
+  const [templateValues, setTemplateValues] = React.useState({
+    ...draft.templateValues,
+  });
   const [bodyText, setBodyText] = React.useState('');
   const [result, setResult] = React.useState<EndpointTestResult | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [running, setRunning] = React.useState(false);
 
   React.useEffect(() => {
-    setMethod('GET');
-    setPath('/api/health');
+    setMethod(isHttpClient ? draft.testSendMethod : 'GET');
+    setProbePath(draft.testProbePath);
+    setSendPath(draft.testSendPath);
+    setTemplateValues({...draft.templateValues});
     setBodyText('');
     setResult(null);
     setError(null);
-  }, [draft.kind, draft.id]);
+  }, [draft.kind, draft.id, draft.template]);
 
-  async function execute(custom: boolean) {
+  async function execute(mode: 'probe' | 'send') {
     setError(null);
     setRunning(true);
     try {
-      const options: EndpointTestOptions = custom
-        ? {
-            ...(isHttp ? {method} : {}),
-            ...(draft.kind === 'httpClient' ? {path} : {}),
-            ...(draft.kind === 'httpClient' && draft.template
-              ? {useTemplate: true}
-              : {}),
-            ...(bodyText.trim() ? {body: JSON.parse(bodyText)} : {}),
-          }
-        : {};
+      let options: EndpointTestOptions = {};
+      if (isHttpClient) {
+        options =
+          mode === 'probe'
+            ? {mode, method: 'GET', path: probePath}
+            : {
+                mode,
+                method,
+                path: sendPath,
+                ...(bodyText.trim()
+                  ? {body: JSON.parse(bodyText)}
+                  : draft.template
+                    ? {
+                        useTemplate: true,
+                        templateFields: configuredTemplateFields.map(
+                          field => field.path,
+                        ),
+                        templateValues:
+                          cleanSelectedTemplateValues(
+                            templateValues,
+                            configuredTemplateFields.map(field => field.path),
+                          ) ?? {},
+                      }
+                    : {}),
+              };
+      } else if (mode === 'send') {
+        options = {
+          ...(isHttp ? {method} : {}),
+          ...(bodyText.trim() ? {body: JSON.parse(bodyText)} : {}),
+        };
+      }
       setResult(await onTest(options));
     } catch (caught) {
       setError(errorMessage(caught));
@@ -2402,11 +2809,59 @@ function EndpointTestPanel({
         </div>
       </div>
       <div className="testPanelBody">
-        <div className="testTarget">
-          <span>{t('endpoint.testTarget')}</span>
-          <code>{endpointDraftUrl(draft)}</code>
-        </div>
-        {isHttp && (
+        {isHttpClient ? (
+          <div className="endpointTestTargets">
+            <div className="testTarget">
+              <span>{t('endpoint.probeTarget')}</span>
+              <code>{endpointHttpClientTestUrl(draft.baseUrl, probePath)}</code>
+            </div>
+            <div className="testTarget">
+              <span>{t('endpoint.sendTarget')}</span>
+              <code>{endpointHttpClientTestUrl(draft.baseUrl, sendPath)}</code>
+            </div>
+          </div>
+        ) : (
+          <div className="testTarget">
+            <span>{t('endpoint.testTarget')}</span>
+            <code>{endpointDraftUrl(draft)}</code>
+          </div>
+        )}
+        {isHttpClient && (
+          <div className="endpointTestRequestGrid">
+            <label>
+              <span>{t('endpoint.probePath')}</span>
+              <input
+                value={probePath}
+                onChange={event => setProbePath(event.target.value)}
+                placeholder="/api/health"
+              />
+            </label>
+            <label>
+              <span>{t('endpoint.sendMethod')}</span>
+              <select
+                value={method}
+                onChange={event =>
+                  setMethod(event.target.value as EndpointTestOptions['method'])
+                }
+              >
+                {['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map(value => (
+                  <option value={value} key={value}>
+                    {value}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>{t('endpoint.sendPath')}</span>
+              <input
+                value={sendPath}
+                onChange={event => setSendPath(event.target.value)}
+                placeholder="/v1/messages"
+              />
+            </label>
+          </div>
+        )}
+        {isHttp && !isHttpClient && (
           <label>
             <span>{t('endpoint.httpMethod')}</span>
             <select
@@ -2423,26 +2878,65 @@ function EndpointTestPanel({
             </select>
           </label>
         )}
-        {draft.kind === 'httpClient' && (
+        {isHttpClient && selectedTemplate && (
+          <fieldset className="templateFieldGrid endpointTestTemplateFields">
+            <legend>{t('endpoint.testTemplateValues')}</legend>
+            <p className="templateFieldHint">
+              {t('endpoint.testTemplateHint', {
+                template: selectedTemplate.displayName,
+              })}
+            </p>
+            {configuredTemplateFields.map(field => (
+              <label key={field.key}>
+                <span>
+                  {field.label}
+                  {field.required ? ' *' : ''}
+                </span>
+                <TemplateFieldControl
+                  field={field}
+                  value={templateValues[field.path] ?? ''}
+                  onChange={value =>
+                    setTemplateValues(current => ({
+                      ...current,
+                      [field.path]: value,
+                    }))
+                  }
+                />
+                <small>{templateFieldConstraint(field)}</small>
+              </label>
+            ))}
+            {configuredTemplateFields.length === 0 && (
+              <p className="formHint">{t('endpoint.noTestTemplateFields')}</p>
+            )}
+          </fieldset>
+        )}
+        {isHttpClient && selectedTemplate ? (
+          <details className="endpointRawOverride">
+            <summary>{t('endpoint.rawJsonOverride')}</summary>
+            <label>
+              <span>{t('endpoint.testPayload')}</span>
+              <textarea
+                className="testPayload"
+                value={bodyText}
+                onChange={event => setBodyText(event.target.value)}
+                placeholder={'{\n  "target": {},\n  "content": {}\n}'}
+                spellCheck={false}
+              />
+            </label>
+            <p className="formHint">{t('endpoint.rawJsonOverrideHint')}</p>
+          </details>
+        ) : (
           <label>
-            <span>{t('endpoint.relativePath')}</span>
-            <input
-              value={path}
-              onChange={event => setPath(event.target.value)}
-              placeholder="/api/health"
+            <span>{t('endpoint.testPayload')}</span>
+            <textarea
+              className="testPayload"
+              value={bodyText}
+              onChange={event => setBodyText(event.target.value)}
+              placeholder={'{\n  "command": "hello"\n}'}
+              spellCheck={false}
             />
           </label>
         )}
-        <label>
-          <span>{t('endpoint.testPayload')}</span>
-          <textarea
-            className="testPayload"
-            value={bodyText}
-            onChange={event => setBodyText(event.target.value)}
-            placeholder={'{\n  "command": "hello"\n}'}
-            spellCheck={false}
-          />
-        </label>
         <p className="formHint">
           {t(isHttp ? 'endpoint.httpTestHint' : 'endpoint.wsTestHint')}
         </p>
@@ -2460,14 +2954,14 @@ function EndpointTestPanel({
         )}
       </div>
       <div className="modalActions">
-        <button disabled={running} onClick={() => void execute(false)}>
+        <button disabled={running} onClick={() => void execute('probe')}>
           <Bug size={15} />
           {t('endpoint.quickProbe')}
         </button>
         <button
           className="primaryButton"
           disabled={running}
-          onClick={() => void execute(true)}
+          onClick={() => void execute('send')}
         >
           <Play size={15} />
           {t('endpoint.sendTest')}
@@ -2658,6 +3152,48 @@ function EndpointEditor({
                   onChange={event => update({baseUrl: event.target.value})}
                 />
               </label>
+              <fieldset className="endpointTestDefaults wideLabel">
+                <legend>{t('endpoint.testDefaults')}</legend>
+                <label>
+                  <span>{t('endpoint.probePath')}</span>
+                  <input
+                    value={draft.testProbePath}
+                    onChange={event =>
+                      update({testProbePath: event.target.value})
+                    }
+                    placeholder="/api/health"
+                  />
+                </label>
+                <label>
+                  <span>{t('endpoint.sendMethod')}</span>
+                  <select
+                    value={draft.testSendMethod}
+                    onChange={event =>
+                      update({
+                        testSendMethod: event.target
+                          .value as EndpointDraft['testSendMethod'],
+                      })
+                    }
+                  >
+                    {['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map(value => (
+                      <option value={value} key={value}>
+                        {value}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>{t('endpoint.sendPath')}</span>
+                  <input
+                    value={draft.testSendPath}
+                    onChange={event =>
+                      update({testSendPath: event.target.value})
+                    }
+                    placeholder="/v1/messages"
+                  />
+                </label>
+              </fieldset>
+              <p className="formHint">{t('endpoint.testDefaultsHint')}</p>
               <label className="wideLabel">
                 <span>{t('field.headers')}</span>
                 <textarea
@@ -2863,6 +3399,13 @@ function createEndpointDraft(
       'headers' in endpoint
         ? JSON.stringify(endpoint.headers ?? {}, null, 2)
         : '{}',
+    testProbePath:
+      'test' in endpoint
+        ? (endpoint.test?.probePath ?? '/api/health')
+        : '/api/health',
+    testSendMethod:
+      'test' in endpoint ? (endpoint.test?.sendMethod ?? 'POST') : 'POST',
+    testSendPath: 'test' in endpoint ? (endpoint.test?.sendPath ?? '/') : '/',
     reconnectEnabled:
       'reconnect' in endpoint ? (endpoint.reconnect?.enabled ?? true) : true,
     reconnectInitialDelayMs:
@@ -2905,6 +3448,9 @@ function createNewEndpointDraft(
     templateFields: [],
     templateValues: {},
     headersText: '{}',
+    testProbePath: '/api/health',
+    testSendMethod: 'POST',
+    testSendPath: '/',
     reconnectEnabled: true,
     reconnectInitialDelayMs: '1000',
     reconnectMaxDelayMs: '30000',
@@ -2985,6 +3531,14 @@ function endpointDraftUrl(draft: EndpointDraft): string {
   if (draft.kind === 'httpClient') return draft.baseUrl;
   if (draft.kind === 'wsClient') return draft.url;
   return endpointServerUrl(draft);
+}
+
+function endpointHttpClientTestUrl(baseUrl: string, pathValue: string): string {
+  try {
+    return new URL(pathValue || '/', baseUrl).toString();
+  } catch {
+    return baseUrl;
+  }
 }
 
 function parseHost(value: string, t: Translator): string {
@@ -3085,6 +3639,7 @@ function endpointEventLogs(
     const decoded = isDecodedMessage(event.meta?.decoded)
       ? event.meta.decoded
       : undefined;
+    const messageType = resolveEndpointMessageType(decoded, event.body);
     return [
       {
         id: event.id,
@@ -3094,9 +3649,11 @@ function endpointEventLogs(
         color: colors[endpoint.key] ?? endpoint.color,
         level: 'info' as const,
         type: 'event' as const,
+        messageType,
         message: `${event.kind} ${detail}`.trim() || t('log.event'),
         detail: decoded?.matched ? undefined : JSON.stringify(event.body ?? {}),
         decoded,
+        mediaCache: collectEndpointMediaCacheInfo(event.body, messageType),
       },
     ];
   });
@@ -3129,13 +3686,142 @@ function formatTemplateErrors(decoded: DecodedMessage): string {
   return ` ${decoded.errors.map(error => `${error.path}: ${error.message}`).join('; ')}`;
 }
 
-function endpointLogPreview(log: EndpointLogEntry): string {
+const ENDPOINT_MESSAGE_TYPES = new Set<EndpointMessageType>([
+  'text',
+  'image',
+  'video',
+  'file',
+  'audio',
+  'forward',
+  'link',
+  'mixed',
+  'unknown',
+]);
+
+function resolveEndpointMessageType(
+  decoded: DecodedMessage | undefined,
+  body: unknown,
+): EndpointMessageType | undefined {
+  const bodyRecord =
+    body && typeof body === 'object' && !Array.isArray(body)
+      ? (body as Record<string, unknown>)
+      : undefined;
+  const explicitValues = [
+    decoded?.values?.message_type,
+    bodyRecord?.message_type,
+  ];
+  for (const value of explicitValues) {
+    if (
+      typeof value === 'string' &&
+      ENDPOINT_MESSAGE_TYPES.has(value as EndpointMessageType)
+    ) {
+      return value as EndpointMessageType;
+    }
+  }
+
+  const contentValue = bodyRecord?.content;
+  if (!contentValue || typeof contentValue !== 'object') return undefined;
+  const content = contentValue as Record<string, unknown>;
+  const inferred = new Set<EndpointMessageType>();
+  const addArrayType = (key: string, type: EndpointMessageType) => {
+    if (Array.isArray(content[key]) && content[key].length > 0) {
+      inferred.add(type);
+    }
+  };
+  addArrayType('images', 'image');
+  addArrayType('videos', 'video');
+  addArrayType('files', 'file');
+  addArrayType('attachments', 'audio');
+  addArrayType('links', 'link');
+  addArrayType('forwards', 'forward');
+  if (inferred.size > 1) return 'mixed';
+  if (inferred.size === 1) return [...inferred][0];
+  return typeof content.text === 'string' && content.text.length > 0
+    ? 'text'
+    : undefined;
+}
+
+function formatEndpointLogType(log: EndpointLogEntry, t: Translator): string {
+  return log.messageType
+    ? t(`messageType.${log.messageType}`)
+    : t(`log.${log.type}`);
+}
+
+function endpointLogPreview(log: EndpointLogEntry, t: Translator): string {
+  const cachePreview = endpointMediaCachePreview(log.mediaCache, t);
   if (log.decoded?.matched && log.decoded.displayItems?.length) {
-    return log.decoded.displayItems
+    const contentItems = log.decoded.displayItems.filter(item =>
+      item.path.startsWith('$.content.'),
+    );
+    const previewItems = contentItems.length
+      ? contentItems
+      : log.decoded.displayItems;
+    const decodedPreview = previewItems
+      .slice(0, 4)
       .map(item => `${item.label}: ${formatLogValue(item.value)}`)
       .join(' / ');
+    return [cachePreview, decodedPreview].filter(Boolean).join(' / ');
   }
-  return log.message || log.detail || '';
+  return [cachePreview, log.message || log.detail || '']
+    .filter(Boolean)
+    .join(' / ');
+}
+
+function endpointMediaCachePreview(
+  media: EndpointMediaCacheInfo[] | undefined,
+  t: Translator,
+): string {
+  if (!media?.length) return '';
+  return media
+    .slice(0, 3)
+    .map(item => {
+      const type = t(`messageType.${item.kind}`);
+      if (item.status === 'cached' && item.filePath) {
+        return `${type} ${t('log.mediaCachePath')}: ${item.filePath}`;
+      }
+      if (item.status === 'referenced' && item.filePath) {
+        return `${type} ${t('log.mediaLocalReference')}: ${item.filePath}`;
+      }
+      return `${type}: ${t(`log.mediaCacheStatus.${item.status}`)}`;
+    })
+    .join(' / ');
+}
+
+function EndpointMediaCacheDetails({
+  media,
+  t,
+}: {
+  media: EndpointMediaCacheInfo[];
+  t: Translator;
+}) {
+  return (
+    <section className="endpointMediaCache" aria-label={t('log.mediaCache')}>
+      <h4>{t('log.mediaCache')}</h4>
+      {media.map(item => (
+        <div className={`endpointMediaCacheRow ${item.status}`} key={item.key}>
+          <span>
+            {t(`messageType.${item.kind}`)}
+            {media.filter(candidate => candidate.kind === item.kind).length > 1
+              ? ` ${item.index + 1}`
+              : ''}
+          </span>
+          <div>
+            <strong>
+              {item.filePath
+                ? `${t(item.status === 'cached' ? 'log.mediaCachePath' : 'log.mediaLocalReference')}: ${item.filePath}`
+                : t('log.mediaCacheUnavailable')}
+            </strong>
+            {item.name && <small>{item.name}</small>}
+            {item.hasRemoteSource && !item.filePath && (
+              <small>{t('log.mediaRemoteOnly')}</small>
+            )}
+            {item.error && <small>{item.error}</small>}
+          </div>
+          <code>{t(`log.mediaCacheStatus.${item.status}`)}</code>
+        </div>
+      ))}
+    </section>
+  );
 }
 
 function endpointLogImageUrl(log: EndpointLogEntry): string | undefined {
@@ -3158,8 +3844,10 @@ function formatExpandedLog(log: EndpointLogEntry): string {
       endpoint: log.endpointId,
       level: log.level,
       type: log.type,
+      messageType: log.messageType,
       message: log.message,
       decoded: log.decoded,
+      mediaCache: log.mediaCache,
       detail: log.detail,
     },
     null,
@@ -3235,7 +3923,10 @@ function ActionsPanel({
   queue: QueueSnapshot | null;
   runs: RunRow[];
   t: Translator;
-  onSaveActions: (actions: AppConfig['actions'], id: string) => Promise<void>;
+  onSaveActions: (
+    actions: AppConfig['actions'],
+    id: string,
+  ) => Promise<AppConfig['actions']>;
   onSave: (content: string) => Promise<void>;
   onRun: (id: string) => Promise<void>;
   onCancel: (id: string) => void;
@@ -3281,13 +3972,11 @@ function ActionsPanel({
       const action = actionFromDraft(draft);
       if (draft.index < 0) next.push(action);
       else next[draft.index] = action;
-      await onSaveActions(next, action.id);
-      setDraft(
-        createActionDraft(
-          action,
-          next.findIndex(item => item.id === action.id),
-        ),
-      );
+      const savedActions = await onSaveActions(next, action.id);
+      const savedIndex = savedActions.findIndex(item => item.id === action.id);
+      const saved = savedActions[savedIndex];
+      if (!saved) throw new Error(t('action.error.savedActionMissing'));
+      setDraft(createActionDraft(saved, savedIndex));
     } catch (error) {
       setSaveError(errorMessage(error));
     }
@@ -4695,116 +5384,113 @@ function Logs({
           </button>
         </div>
       </div>
-      <div className="logWorkbench">
-        <ResizablePanel
-          storageKey="logs-stream"
-          className="logCenter"
-          resetLabel={t('common.resetPanelSize')}
-        >
-          <div className="logSummary">
-            <div>
-              <span>{t('logs.centerDescription')}</span>
-              <strong>{t('logs.center')}</strong>
+      <LogSplitLayout
+        resizeColumnLabel={t('logs.resizeTrace')}
+        stream={
+          <section className="logCenter">
+            <div className="logSummary">
+              <div>
+                <span>{t('logs.centerDescription')}</span>
+                <strong>{t('logs.center')}</strong>
+              </div>
+              <div>
+                <span>
+                  <strong>{filtered.length}</strong>
+                  {t('logs.visible')}
+                </span>
+                <span>
+                  <strong>
+                    {new Set(filtered.map(item => item.traceId)).size}
+                  </strong>
+                  {t('logs.traces')}
+                </span>
+                <em>{paused ? t('logs.paused') : t('logs.live')}</em>
+              </div>
             </div>
-            <div>
-              <span>
-                <strong>{filtered.length}</strong>
-                {t('logs.visible')}
-              </span>
-              <span>
-                <strong>
-                  {new Set(filtered.map(item => item.traceId)).size}
-                </strong>
-                {t('logs.traces')}
-              </span>
-              <em>{paused ? t('logs.paused') : t('logs.live')}</em>
+            {viewMode === 'entries' ? (
+              <div className="unifiedLogList">
+                {filtered.map(item => (
+                  <details
+                    className={`unifiedLogEntry ${item.status} ${item.traceId === selectedTrace ? 'selected' : ''}`}
+                    key={`${item.category}-${item.id}`}
+                    onClick={() => setSelectedTraceId(item.traceId)}
+                  >
+                    <summary className="unifiedLogSummary">
+                      <span className={`logDirection ${item.direction}`} />
+                      <span className="unifiedLogPrimary">
+                        <strong>{item.title}</strong>
+                        <small>{item.summary}</small>
+                      </span>
+                      <span className="unifiedLogField">
+                        <small>{t('field.source')}</small>
+                        <code>{item.source}</code>
+                      </span>
+                      <span className="unifiedLogField">
+                        <small>{t('field.time')}</small>
+                        <em>{new Date(item.time).toLocaleTimeString()}</em>
+                      </span>
+                      <code className={`logDirectionBadge ${item.direction}`}>
+                        {t(`logs.${item.direction}`)}
+                      </code>
+                      {item.category === 'event' && (
+                        <button
+                          className="logReplayButton"
+                          onClick={event => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            onReplay(item.id);
+                          }}
+                          title={t('common.replay')}
+                        >
+                          <RotateCcw size={14} />
+                        </button>
+                      )}
+                    </summary>
+                    <pre>{JSON.stringify(item.raw, null, 2)}</pre>
+                  </details>
+                ))}
+                {filtered.length === 0 && (
+                  <div className="connectionEmpty">{t('logs.noMatches')}</div>
+                )}
+              </div>
+            ) : (
+              <pre className="logConsole">
+                {filtered.map(formatUnifiedConsoleLine).join('\n') ||
+                  t('logs.noMatches')}
+              </pre>
+            )}
+          </section>
+        }
+        trace={
+          <aside className="traceInspector">
+            <div className="traceHead">
+              <span>{t('logs.traceDescription')}</span>
+              <strong>{t('logs.trace')}</strong>
+              <code>
+                {selectedTrace
+                  ? shortTrace(selectedTrace)
+                  : t('common.notAvailable')}
+              </code>
             </div>
-          </div>
-          {viewMode === 'entries' ? (
-            <div className="unifiedLogList">
-              {filtered.map(item => (
-                <details
-                  className={`unifiedLogEntry ${item.status} ${item.traceId === selectedTrace ? 'selected' : ''}`}
-                  key={`${item.category}-${item.id}`}
-                  onClick={() => setSelectedTraceId(item.traceId)}
+            <div className="traceTimeline">
+              {traceSteps(traceItems, t).map((step, index) => (
+                <div
+                  className={`traceStep ${step.status}`}
+                  key={`${step.time}-${index}`}
                 >
-                  <summary className="unifiedLogSummary">
-                    <span className={`logDirection ${item.direction}`} />
-                    <span className="unifiedLogPrimary">
-                      <strong>{item.title}</strong>
-                      <small>{item.summary}</small>
-                    </span>
-                    <span className="unifiedLogField">
-                      <small>{t('field.source')}</small>
-                      <code>{item.source}</code>
-                    </span>
-                    <span className="unifiedLogField">
-                      <small>{t('field.time')}</small>
-                      <em>{new Date(item.time).toLocaleTimeString()}</em>
-                    </span>
-                    <code className={`logDirectionBadge ${item.direction}`}>
-                      {t(`logs.${item.direction}`)}
-                    </code>
-                    {item.category === 'event' && (
-                      <button
-                        className="logReplayButton"
-                        onClick={event => {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          onReplay(item.id);
-                        }}
-                        title={t('common.replay')}
-                      >
-                        <RotateCcw size={14} />
-                      </button>
-                    )}
-                  </summary>
-                  <pre>{JSON.stringify(item.raw, null, 2)}</pre>
-                </details>
+                  <i />
+                  <span>{new Date(step.time).toLocaleTimeString()}</span>
+                  <strong>{step.title}</strong>
+                  <small>{step.detail}</small>
+                </div>
               ))}
-              {filtered.length === 0 && (
-                <div className="connectionEmpty">{t('logs.noMatches')}</div>
+              {traceItems.length === 0 && (
+                <div className="inspectorEmpty">{t('logs.selectTrace')}</div>
               )}
             </div>
-          ) : (
-            <pre className="logConsole">
-              {filtered.map(formatUnifiedConsoleLine).join('\n') ||
-                t('logs.noMatches')}
-            </pre>
-          )}
-        </ResizablePanel>
-        <ResizablePanel
-          storageKey="logs-trace"
-          className="traceInspector"
-          resetLabel={t('common.resetPanelSize')}
-        >
-          <div className="traceHead">
-            <span>{t('logs.traceDescription')}</span>
-            <strong>{t('logs.trace')}</strong>
-            <code>
-              {selectedTrace
-                ? shortTrace(selectedTrace)
-                : t('common.notAvailable')}
-            </code>
-          </div>
-          <div className="traceTimeline">
-            {traceSteps(traceItems, t).map((step, index) => (
-              <div
-                className={`traceStep ${step.status}`}
-                key={`${step.time}-${index}`}
-              >
-                <i />
-                <span>{new Date(step.time).toLocaleTimeString()}</span>
-                <strong>{step.title}</strong>
-                <small>{step.detail}</small>
-              </div>
-            ))}
-            {traceItems.length === 0 && (
-              <div className="inspectorEmpty">{t('logs.selectTrace')}</div>
-            )}
-          </div>
-        </ResizablePanel>
-      </div>
+          </aside>
+        }
+      />
     </section>
   );
 }
@@ -4987,7 +5673,8 @@ function YamlEditor({
   return (
     <Panel
       title={title ?? `${name}.yaml`}
-      resizableKey={`yaml-${name}`}
+      className="yamlPanel"
+      resizableKey={`yaml-v2-${name}`}
       resetLabel={t('common.resetPanelSize')}
       actions={
         <button
@@ -5004,6 +5691,7 @@ function YamlEditor({
         value={draft}
         onChange={event => setDraft(event.target.value)}
         spellCheck={false}
+        wrap="off"
       />
     </Panel>
   );
@@ -5013,14 +5701,17 @@ function Panel({
   title,
   actions,
   children,
+  className,
   resizableKey,
   resetLabel,
 }: React.PropsWithChildren<{
   title: string;
   actions?: React.ReactNode;
+  className?: string;
   resizableKey?: string;
   resetLabel?: string;
 }>) {
+  const panelClassName = ['panel', className].filter(Boolean).join(' ');
   const content = (
     <>
       <div className="panelHead">
@@ -5033,13 +5724,13 @@ function Panel({
   return resizableKey && resetLabel ? (
     <ResizablePanel
       storageKey={resizableKey}
-      className="panel"
+      className={panelClassName}
       resetLabel={resetLabel}
     >
       {content}
     </ResizablePanel>
   ) : (
-    <section className="panel">{content}</section>
+    <section className={panelClassName}>{content}</section>
   );
 }
 

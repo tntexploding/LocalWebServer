@@ -32,6 +32,7 @@ import {
   assertValidApiSecurityPolicy,
   type ApiPermission,
   type ApiRole,
+  withDevelopmentCorsOrigin,
 } from './apiSecurity.js';
 import {ActionExecutor} from './actionExecutor.js';
 import {ActionQueue} from './actionQueue.js';
@@ -48,12 +49,14 @@ import {
 } from './networkPolicy.js';
 import {WorkflowExecutor} from './workflowExecutor.js';
 import {WorkflowScheduler} from './workflowScheduler.js';
-import {assertSupportedRuntime} from './runtimePolicy.js';
+import {reportRuntimeRecommendation} from './runtimePolicy.js';
 
 const codeRoot = path.resolve(
   fileURLToPath(new URL('../../..', import.meta.url)),
 );
-await assertSupportedRuntime(codeRoot);
+await reportRuntimeRecommendation(codeRoot, message =>
+  console.warn(`[runtime] ${message}`),
+);
 const rootDir = path.resolve(process.env.LAS_ROOT_DIR ?? codeRoot);
 const messageTemplates = new MessageTemplateDecoder(rootDir);
 const configStore = new ConfigStore(rootDir, {
@@ -72,6 +75,8 @@ const configStore = new ConfigStore(rootDir, {
 await ensureDataDir(rootDir);
 
 let config = await configStore.load();
+const developmentWebOrigin = process.env.LAS_DEV_WEB_ORIGIN;
+withDevelopmentCorsOrigin(config.app.security, developmentWebOrigin);
 const networkPolicy = new NetworkPolicy(() => config.app.network);
 const endpointTester = new EndpointTester(
   () => config,
@@ -133,7 +138,7 @@ const app = fastify({
 app.server.headersTimeout = config.app.network.inbound.headersTimeoutMs;
 app.server.maxHeadersCount = config.app.network.inbound.maxHeadersCount;
 const apiSecurity = new ApiSecurity(
-  () => config.app.security,
+  () => withDevelopmentCorsOrigin(config.app.security, developmentWebOrigin),
   auditLog,
   error => app.log.error({error}, 'Security audit record could not be saved.'),
 );
@@ -145,6 +150,8 @@ await app.register(cors, {
   origin(origin, callback) {
     callback(null, apiSecurity.isOriginAllowed(origin));
   },
+  methods: ['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['content-type', 'x-las-token'],
 });
 
 app.addHook('onSend', async (request, reply, payload) => {
@@ -406,18 +413,24 @@ app.post<{
   Body: {
     kind: 'httpServer' | 'wsServer' | 'httpClient' | 'wsClient';
     id: string;
+    mode?: 'probe' | 'send';
     method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
     path?: string;
     body?: unknown;
     useTemplate?: boolean;
+    templateFields?: string[];
+    templateValues?: Record<string, unknown>;
   };
 }>('/api/endpoints/test', async (request, reply) => {
   requirePermission(request, 'operate');
   const result = await endpointTester.test(request.body.kind, request.body.id, {
+    mode: request.body.mode,
     method: request.body.method,
     path: request.body.path,
     body: request.body.body,
     useTemplate: request.body.useTemplate,
+    templateFields: request.body.templateFields,
+    templateValues: request.body.templateValues,
   });
   return reply.code(result.ok ? 200 : 502).send(result);
 });

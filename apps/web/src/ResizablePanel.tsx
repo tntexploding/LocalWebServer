@@ -22,10 +22,12 @@ export function ResizablePanel({
   className,
   children,
   resetLabel,
+  contentSized = false,
 }: React.PropsWithChildren<{
   storageKey: string;
   className: string;
   resetLabel: string;
+  contentSized?: boolean;
 }>) {
   const panelRef = React.useRef<HTMLElement>(null);
   const resizeSession = React.useRef<PanelResizeSession | null>(null);
@@ -35,6 +37,11 @@ export function ResizablePanel({
   const [size, setSize] = React.useState<PanelSize | null>(() =>
     readPanelSize(storageKey),
   );
+  const panelStyle: React.CSSProperties | undefined = size
+    ? contentSized
+      ? {width: size.width, minHeight: size.height}
+      : {width: size.width, height: size.height}
+    : undefined;
 
   React.useEffect(() => {
     resizeSession.current = null;
@@ -85,7 +92,12 @@ export function ResizablePanel({
       event.clientY,
     );
     panel.style.width = `${Math.round(width)}px`;
-    panel.style.height = `${Math.round(height)}px`;
+    if (contentSized) {
+      panel.style.removeProperty('height');
+      panel.style.minHeight = `${Math.round(height)}px`;
+    } else {
+      panel.style.height = `${Math.round(height)}px`;
+    }
   }
 
   function finishResize(event: React.PointerEvent<HTMLButtonElement>) {
@@ -97,7 +109,11 @@ export function ResizablePanel({
     const rect = panel.getBoundingClientRect();
     const next = {
       width: Math.round(rect.width),
-      height: Math.round(rect.height),
+      height: Math.round(
+        contentSized
+          ? cssPixels(panel.style.minHeight, rect.height)
+          : rect.height,
+      ),
     };
     setSize(next);
     writePanelSize(storageKey, next);
@@ -113,6 +129,7 @@ export function ResizablePanel({
     removeStoredPanelSize(legacyPanelSizeStorageKey(storageKey));
     panelRef.current?.style.removeProperty('width');
     panelRef.current?.style.removeProperty('height');
+    panelRef.current?.style.removeProperty('min-height');
     setSize(null);
   }
 
@@ -123,7 +140,8 @@ export function ResizablePanel({
       data-panel-key={storageKey}
       data-resizing={isResizing ? 'true' : 'false'}
       data-user-sized={size ? 'true' : 'false'}
-      style={size ?? undefined}
+      data-content-sized={contentSized ? 'true' : 'false'}
+      style={panelStyle}
     >
       {children}
       {size && (
@@ -181,6 +199,8 @@ function removeStoredPanelSize(key: string) {
 }
 
 function cssPixels(value: string, fallback: number) {
-  const parsed = Number.parseFloat(value);
+  const normalized = value.trim().toLowerCase();
+  if (!normalized.endsWith('px')) return fallback;
+  const parsed = Number.parseFloat(normalized);
   return Number.isFinite(parsed) ? parsed : fallback;
 }

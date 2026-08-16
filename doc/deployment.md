@@ -2,8 +2,8 @@
 
 ## 运行环境
 
-源码部署要求 Node.js 24.18.1 至 24.x。`npm run runtime:check` 和后端正式入口都会读取
-`release.config.json`，拒绝低于安全基线或未经支持的主版本。建议使用锁文件安装：
+源码部署推荐 Node.js 24.18.1 或更新的 24.x。`npm run runtime:check` 和后端正式入口都会
+读取 `release.config.json`；版本偏差只产生兼容性提示，不会阻止启动。建议使用锁文件安装：
 
 ```powershell
 npm ci --ignore-scripts

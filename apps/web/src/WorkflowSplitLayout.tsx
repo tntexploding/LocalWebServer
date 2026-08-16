@@ -2,21 +2,22 @@ import React from 'react';
 import {clampSplitSize, type SplitResizeBounds} from './splitSizing';
 import {SplitDivider} from './SplitDivider';
 
-const STORAGE_KEY = 'las-workflow-layout:v1';
+const STORAGE_KEY = 'las-workflow-layout:v2';
+const LEGACY_STORAGE_KEY = 'las-workflow-layout:v1';
 const DIVIDER_SIZE = 12;
-const MIN_REGISTRY_WIDTH = 300;
-const MIN_INSPECTOR_WIDTH = 460;
-const MIN_TOP_HEIGHT = 280;
-const MIN_CANVAS_HEIGHT = 320;
+const MIN_SIDEBAR_WIDTH = 420;
+const MIN_CANVAS_WIDTH = 520;
+const MIN_REGISTRY_HEIGHT = 180;
+const MIN_INSPECTOR_HEIGHT = 260;
 
 interface WorkflowLayoutSize {
-  registryWidth?: number;
-  topHeight?: number;
+  sidebarWidth?: number;
+  registryHeight?: number;
 }
 
 type WorkflowLayoutStyle = React.CSSProperties & {
-  '--workflow-registry-width'?: string;
-  '--workflow-top-height'?: string;
+  '--workflow-sidebar-width'?: string;
+  '--workflow-registry-height'?: string;
 };
 
 interface WorkflowSplitLayoutProps {
@@ -27,7 +28,7 @@ interface WorkflowSplitLayoutProps {
   resizeRowLabel: string;
 }
 
-/** Fixed one-column/one-row split layout for the automation editor. */
+/** Places the task list and inspector beside an independent workflow canvas. */
 export function WorkflowSplitLayout({
   registry,
   inspector,
@@ -36,8 +37,8 @@ export function WorkflowSplitLayout({
   resizeRowLabel,
 }: WorkflowSplitLayoutProps) {
   const rootRef = React.useRef<HTMLDivElement>(null);
+  const sidebarRef = React.useRef<HTMLDivElement>(null);
   const registryRef = React.useRef<HTMLDivElement>(null);
-  const topRef = React.useRef<HTMLDivElement>(null);
   const [layout, setLayout] = React.useState<WorkflowLayoutSize>(() =>
     readLayout(),
   );
@@ -55,34 +56,34 @@ export function WorkflowSplitLayout({
       const current = layoutRef.current;
       const bounds = root.getBoundingClientRect();
       const next = {
-        ...(current.registryWidth
+        ...(current.sidebarWidth
           ? {
-              registryWidth: clampSplitSize(
-                current.registryWidth,
-                MIN_REGISTRY_WIDTH,
+              sidebarWidth: clampSplitSize(
+                current.sidebarWidth,
+                MIN_SIDEBAR_WIDTH,
                 Math.max(
-                  MIN_REGISTRY_WIDTH,
-                  bounds.width - DIVIDER_SIZE - MIN_INSPECTOR_WIDTH,
+                  MIN_SIDEBAR_WIDTH,
+                  bounds.width - DIVIDER_SIZE - MIN_CANVAS_WIDTH,
                 ),
               ),
             }
           : {}),
-        ...(current.topHeight
+        ...(current.registryHeight
           ? {
-              topHeight: clampSplitSize(
-                current.topHeight,
-                MIN_TOP_HEIGHT,
+              registryHeight: clampSplitSize(
+                current.registryHeight,
+                MIN_REGISTRY_HEIGHT,
                 Math.max(
-                  MIN_TOP_HEIGHT,
-                  bounds.height - DIVIDER_SIZE - MIN_CANVAS_HEIGHT,
+                  MIN_REGISTRY_HEIGHT,
+                  bounds.height - DIVIDER_SIZE - MIN_INSPECTOR_HEIGHT,
                 ),
               ),
             }
           : {}),
       };
       if (
-        next.registryWidth === current.registryWidth &&
-        next.topHeight === current.topHeight
+        next.sidebarWidth === current.sidebarWidth &&
+        next.registryHeight === current.registryHeight
       ) {
         return;
       }
@@ -95,11 +96,11 @@ export function WorkflowSplitLayout({
   }, []);
 
   const style: WorkflowLayoutStyle = {
-    ...(layout.registryWidth
-      ? {'--workflow-registry-width': `${layout.registryWidth}px`}
+    ...(layout.sidebarWidth
+      ? {'--workflow-sidebar-width': `${layout.sidebarWidth}px`}
       : {}),
-    ...(layout.topHeight
-      ? {'--workflow-top-height': `${layout.topHeight}px`}
+    ...(layout.registryHeight
+      ? {'--workflow-registry-height': `${layout.registryHeight}px`}
       : {}),
   };
 
@@ -107,15 +108,15 @@ export function WorkflowSplitLayout({
     event: React.PointerEvent<HTMLButtonElement>,
   ): SplitResizeBounds | null {
     const rootBounds = rootRef.current?.getBoundingClientRect();
-    const registryBounds = registryRef.current?.getBoundingClientRect();
-    if (!rootBounds || !registryBounds) return null;
+    const sidebarBounds = sidebarRef.current?.getBoundingClientRect();
+    if (!rootBounds || !sidebarBounds) return null;
     return {
       startCoordinate: event.clientX,
-      startSize: registryBounds.width,
-      minimum: MIN_REGISTRY_WIDTH,
+      startSize: sidebarBounds.width,
+      minimum: MIN_SIDEBAR_WIDTH,
       maximum: Math.max(
-        MIN_REGISTRY_WIDTH,
-        rootBounds.width - DIVIDER_SIZE - MIN_INSPECTOR_WIDTH,
+        MIN_SIDEBAR_WIDTH,
+        rootBounds.width - DIVIDER_SIZE - MIN_CANVAS_WIDTH,
       ),
     };
   }
@@ -124,15 +125,15 @@ export function WorkflowSplitLayout({
     event: React.PointerEvent<HTMLButtonElement>,
   ): SplitResizeBounds | null {
     const rootBounds = rootRef.current?.getBoundingClientRect();
-    const topBounds = topRef.current?.getBoundingClientRect();
-    if (!rootBounds || !topBounds) return null;
+    const registryBounds = registryRef.current?.getBoundingClientRect();
+    if (!rootBounds || !registryBounds) return null;
     return {
       startCoordinate: event.clientY,
-      startSize: topBounds.height,
-      minimum: MIN_TOP_HEIGHT,
+      startSize: registryBounds.height,
+      minimum: MIN_REGISTRY_HEIGHT,
       maximum: Math.max(
-        MIN_TOP_HEIGHT,
-        rootBounds.height - DIVIDER_SIZE - MIN_CANVAS_HEIGHT,
+        MIN_REGISTRY_HEIGHT,
+        rootBounds.height - DIVIDER_SIZE - MIN_INSPECTOR_HEIGHT,
       ),
     };
   }
@@ -146,33 +147,36 @@ export function WorkflowSplitLayout({
   function resetLayout() {
     updateLayout({});
     removeStoredValue(STORAGE_KEY);
+    removeStoredValue(LEGACY_STORAGE_KEY);
   }
 
   return (
     <div className="workflowWorkbench" ref={rootRef} style={style}>
-      <div className="workflowRegistry" ref={registryRef}>
-        {registry}
+      <div className="workflowSidebar" ref={sidebarRef}>
+        <div className="workflowRegistry" ref={registryRef}>
+          {registry}
+        </div>
+        <SplitDivider
+          orientation="horizontal"
+          className="workflowRowDivider"
+          label={resizeRowLabel}
+          onResizeStart={getRowBounds}
+          onResize={registryHeight =>
+            updateLayout({...layoutRef.current, registryHeight})
+          }
+          onResizeEnd={() => writeLayout(layoutRef.current)}
+          onReset={resetLayout}
+        />
+        <div className="workflowInspector">{inspector}</div>
       </div>
       <SplitDivider
         orientation="vertical"
         className="workflowColumnDivider"
         label={resizeColumnLabel}
         onResizeStart={getColumnBounds}
-        onResize={registryWidth =>
-          updateLayout({...layoutRef.current, registryWidth})
+        onResize={sidebarWidth =>
+          updateLayout({...layoutRef.current, sidebarWidth})
         }
-        onResizeEnd={() => writeLayout(layoutRef.current)}
-        onReset={resetLayout}
-      />
-      <div className="workflowInspector" ref={topRef}>
-        {inspector}
-      </div>
-      <SplitDivider
-        orientation="horizontal"
-        className="workflowRowDivider"
-        label={resizeRowLabel}
-        onResizeStart={getRowBounds}
-        onResize={topHeight => updateLayout({...layoutRef.current, topHeight})}
         onResizeEnd={() => writeLayout(layoutRef.current)}
         onReset={resetLayout}
       />
@@ -187,11 +191,11 @@ function readLayout(): WorkflowLayoutSize {
       localStorage.getItem(STORAGE_KEY) ?? '{}',
     ) as WorkflowLayoutSize;
     return {
-      ...(validDimension(parsed.registryWidth)
-        ? {registryWidth: parsed.registryWidth}
+      ...(validDimension(parsed.sidebarWidth)
+        ? {sidebarWidth: parsed.sidebarWidth}
         : {}),
-      ...(validDimension(parsed.topHeight)
-        ? {topHeight: parsed.topHeight}
+      ...(validDimension(parsed.registryHeight)
+        ? {registryHeight: parsed.registryHeight}
         : {}),
     };
   } catch {

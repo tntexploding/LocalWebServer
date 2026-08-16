@@ -3,7 +3,10 @@ import {createRequire} from 'node:module';
 import {createServer} from 'node:net';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {loadDevelopmentSettings} from './development-settings.mjs';
+import {
+  assertDevelopmentOriginAllowed,
+  loadDevelopmentSettings,
+} from './development-settings.mjs';
 
 const codeRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const projectRoot = path.resolve(process.env.LAS_ROOT_DIR ?? codeRoot);
@@ -15,25 +18,35 @@ let shuttingDown = false;
 let shutdownPromise;
 
 async function main() {
-  const settings = await loadDevelopmentSettings(projectRoot);
+  const configuredSettings = await loadDevelopmentSettings(projectRoot);
+  assertDevelopmentOriginAllowed(configuredSettings);
   await assertPortAvailable(
-    settings.backendHost,
-    settings.backendPort,
+    configuredSettings.backendHost,
+    configuredSettings.backendPort,
     'backend',
   );
-  await assertPortAvailable(settings.webHost, settings.webPort, 'WebUI');
+  const webPort = await resolveWebPort(
+    configuredSettings.webHost,
+    configuredSettings.webPort,
+  );
+  const settings = withWebPort(configuredSettings, webPort);
 
   await runBuild('build:core', ['run', 'build', '-w', '@las/core']);
   await runBuild('build:storage', ['run', 'build', '-w', '@las/storage']);
 
+  console.log('[dev] Starting backend and WebUI...');
   const server = startNodeProcess(
     'server',
     resolvePackageCli(serverRoot, 'tsx'),
     ['watch', 'src/index.ts'],
-    {cwd: serverRoot, env: process.env},
+    {
+      cwd: serverRoot,
+      env: {
+        ...process.env,
+        LAS_DEV_WEB_ORIGIN: new URL(settings.webUrl).origin,
+      },
+    },
   );
-  await waitForHttp(`${settings.apiBase}/api/health`, 'backend', server);
-
   const web = startNodeProcess(
     'web',
     resolvePackageCli(webRoot, 'vite'),
@@ -49,7 +62,10 @@ async function main() {
       env: {...process.env, VITE_API_BASE: settings.apiBase},
     },
   );
-  await waitForHttp(settings.webUrl, 'WebUI', web);
+  await Promise.all([
+    waitForHttp(`${settings.apiBase}/api/health`, 'backend', server),
+    waitForHttp(settings.webUrl, 'WebUI', web),
+  ]);
 
   console.log(`[dev] Backend ready: ${settings.apiBase}`);
   console.log(`[dev] WebUI ready:   ${settings.webUrl}`);
@@ -79,8 +95,13 @@ function runBuild(name, args) {
       env: process.env,
       stdio: 'inherit',
     });
-    child.once('error', reject);
+    children.set(child, name);
+    child.once('error', error => {
+      children.delete(child);
+      reject(error);
+    });
     child.once('exit', (code, signal) => {
+      children.delete(child);
       if (code === 0) {
         resolve();
         return;
@@ -94,7 +115,8 @@ function startNodeProcess(name, script, args, options) {
   const child = spawn(process.execPath, [script, ...args], {
     ...options,
     stdio: 'inherit',
-    windowsHide: false,
+    detached: process.platform !== 'win32',
+    windowsHide: true,
   });
   children.set(child, name);
   child.once('error', error => {
@@ -117,7 +139,7 @@ function startNodeProcess(name, script, args, options) {
 
 function spawnNpm(args, options) {
   if (process.platform !== 'win32') {
-    return spawn(npmCommand, args, options);
+    return spawn(npmCommand, args, {...options, detached: true});
   }
   return spawn(
     'cmd.exe',
@@ -136,25 +158,75 @@ function quoteCmdArg(value) {
 }
 
 async function assertPortAvailable(host, port, name) {
-  await new Promise((resolve, reject) => {
+  try {
+    await probePort(host, port);
+  } catch (error) {
+    throw portError(host, port, name, error);
+  }
+}
+
+async function resolveWebPort(host, configuredPort) {
+  try {
+    await probePort(host, configuredPort);
+    return configuredPort;
+  } catch (error) {
+    if (!['EACCES', 'EADDRINUSE'].includes(error?.code)) {
+      throw portError(host, configuredPort, 'WebUI', error);
+    }
+    const fallbackPort = await allocatePort(host);
+    console.warn(
+      `[dev] WebUI port ${host}:${configuredPort} is unavailable (${error.code}); ` +
+        `using ${host}:${fallbackPort} for this session.`,
+    );
+    return fallbackPort;
+  }
+}
+
+function withWebPort(settings, webPort) {
+  if (settings.webPort === webPort) return settings;
+  const webUrl = new URL(settings.webUrl);
+  webUrl.port = String(webPort);
+  return {...settings, webPort, webUrl: webUrl.href};
+}
+
+function probePort(host, port) {
+  return new Promise((resolve, reject) => {
     const probe = createServer();
-    probe.once('error', error => {
-      const detail =
-        error.code === 'EADDRINUSE'
-          ? 'The port is already in use, possibly by an earlier dev process.'
-          : error.code === 'EACCES'
-            ? 'Windows denied access to this port or reserved it.'
-            : error.message;
-      reject(
-        new Error(
-          `${name} cannot listen on ${host}:${port} (${error.code}). ${detail}`,
-        ),
-      );
-    });
+    probe.once('error', reject);
     probe.listen({host, port, exclusive: true}, () => {
       probe.close(closeError => (closeError ? reject(closeError) : resolve()));
     });
   });
+}
+
+async function allocatePort(host) {
+  return new Promise((resolve, reject) => {
+    const probe = createServer();
+    probe.once('error', reject);
+    probe.listen({host, port: 0, exclusive: true}, () => {
+      const address = probe.address();
+      const port = typeof address === 'object' && address ? address.port : 0;
+      probe.close(error => {
+        if (error) reject(error);
+        else if (port > 0) resolve(port);
+        else reject(new Error(`Could not allocate a WebUI port on ${host}.`));
+      });
+    });
+  });
+}
+
+function portError(host, port, name, error) {
+  const detail =
+    error?.code === 'EADDRINUSE'
+      ? 'The port is already in use, possibly by an earlier dev process.'
+      : error?.code === 'EACCES'
+        ? 'Windows denied access to this port or reserved it.'
+        : error instanceof Error
+          ? error.message
+          : String(error);
+  return new Error(
+    `${name} cannot listen on ${host}:${port} (${error?.code ?? 'unknown'}). ${detail}`,
+  );
 }
 
 async function waitForHttp(url, name, child, timeoutMs = 15000) {
@@ -193,26 +265,45 @@ function shutdown(exitCode = 0) {
 async function stopProcessTree(child) {
   if (!child.pid || child.exitCode !== null) return;
   if (process.platform === 'win32') {
-    await new Promise(resolve => {
+    const stopped = await new Promise(resolve => {
       const killer = spawn(
         'taskkill.exe',
         ['/pid', String(child.pid), '/t', '/f'],
         {stdio: 'ignore', windowsHide: true},
       );
       killer.once('error', () => {
-        child.kill();
-        resolve();
+        resolve(false);
       });
-      killer.once('exit', resolve);
+      killer.once('exit', code => resolve(code === 0));
     });
+    if (!stopped && child.exitCode === null) {
+      console.warn(
+        `[dev] Could not stop process tree ${child.pid}; stopping its parent process directly.`,
+      );
+      child.kill('SIGKILL');
+    }
+    await waitForProcessExit(child, 2000);
     return;
   }
-  child.kill('SIGTERM');
-  const exited = await Promise.race([
+  signalProcessGroup(child, 'SIGTERM');
+  const exited = await waitForProcessExit(child, 3000);
+  if (!exited && child.exitCode === null) signalProcessGroup(child, 'SIGKILL');
+}
+
+async function waitForProcessExit(child, timeoutMs) {
+  if (child.exitCode !== null) return true;
+  return Promise.race([
     new Promise(resolve => child.once('exit', () => resolve(true))),
-    new Promise(resolve => setTimeout(() => resolve(false), 3000)),
+    new Promise(resolve => setTimeout(() => resolve(false), timeoutMs)),
   ]);
-  if (!exited && child.exitCode === null) child.kill('SIGKILL');
+}
+
+function signalProcessGroup(child, signal) {
+  try {
+    process.kill(-child.pid, signal);
+  } catch {
+    child.kill(signal);
+  }
 }
 
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {

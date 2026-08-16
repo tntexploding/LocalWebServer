@@ -457,6 +457,10 @@ nav button > small {
   color: var(--green);
 }
 
+.sidebarFoot[data-state='restricted'] svg {
+  color: var(--amber);
+}
+
 .sidebarFoot span {
   min-width: 0;
   display: grid;
@@ -704,8 +708,7 @@ nav button > small {
 }
 
 .workspaceToolbar,
-.projectIntro,
-.serviceOverview,
+.overviewSummary,
 .diagnosticsPanel,
 .connectionTable,
 .endpointInspector,
@@ -717,9 +720,7 @@ nav button > small {
 .logSummary,
 .traceInspector,
 .unifiedLogList,
-.monitorModule,
-.runtimeMetric,
-.upcomingActions {
+.monitorModule {
   position: relative;
   min-width: 0;
   border: 1px solid var(--line);
@@ -879,19 +880,54 @@ label > span,
   min-height: 0;
 }
 
+.panel.yamlPanel.resizablePanel {
+  width: 100%;
+  height: calc(100vh - 214px);
+  height: calc(100dvh - 214px);
+  min-width: min(640px, 100%);
+  min-height: 420px;
+  align-self: stretch;
+  justify-self: stretch;
+  overflow: hidden;
+}
+
+.panel.yamlPanel > textarea {
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  padding: 16px 18px 44px;
+  overflow: auto;
+  resize: none;
+  tab-size: 2;
+  white-space: pre;
+}
+
+.panel.yamlPanel > .primaryButton {
+  flex: 0 0 auto;
+  margin: 10px 12px 12px;
+}
+
 .diagnosticsPanel {
   display: grid;
-  gap: 12px;
+  gap: 10px;
+  max-height: min(58dvh, 520px);
   margin-bottom: 14px;
   border-color: rgba(255, 107, 120, 0.42);
   border-left: 3px solid var(--red);
   background: var(--red-soft);
   padding: 14px 16px;
+  overflow: auto;
+}
+
+.diagnosticsPanel[data-kind='auth'] {
+  border-color: rgba(240, 184, 75, 0.45);
+  border-left-color: var(--amber);
+  background: var(--amber-soft);
 }
 
 .diagnosticsHead {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 14px;
 }
@@ -905,6 +941,26 @@ label > span,
   color: #eeb6bb;
 }
 
+.diagnosticsPanel[data-kind='auth'] .diagnosticsHead h2 {
+  color: #ffe1a4;
+}
+
+.diagnosticsPanel[data-kind='auth'] .diagnosticsHead p,
+.diagnosticsPanel[data-kind='auth'] .diagnosticsMeta span {
+  color: #d8bd88;
+}
+
+.diagnosticsHeadActions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 8px;
+}
+
+.diagnosticsHeadActions button {
+  min-height: 38px;
+  white-space: nowrap;
+}
+
 .diagnosticsMeta,
 .diagnosticsDetails {
   display: grid;
@@ -916,19 +972,50 @@ label > span,
   gap: 8px;
 }
 
+.diagnosticsGroup,
 .diagnosticsList details,
 .diagnosticsCommand {
   border: 1px solid rgba(255, 107, 120, 0.32);
   border-radius: var(--radius-sm);
   background: rgba(11, 14, 17, 0.72);
+}
+
+.diagnosticsPanel[data-kind='auth'] .diagnosticsGroup,
+.diagnosticsPanel[data-kind='auth'] .diagnosticsList details,
+.diagnosticsPanel[data-kind='auth'] .diagnosticsCommand {
+  border-color: rgba(240, 184, 75, 0.34);
+}
+
+.diagnosticsList details,
+.diagnosticsCommand {
   padding: 10px 12px;
 }
 
+.diagnosticsGroup > summary,
 .diagnosticsList summary {
   display: flex;
   justify-content: space-between;
   gap: 12px;
   cursor: pointer;
+}
+
+.diagnosticsGroup > summary {
+  min-height: 42px;
+  align-items: center;
+  padding: 8px 12px;
+}
+
+.diagnosticsGroup > summary span {
+  color: var(--text-soft);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.diagnosticsBody {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--line);
+  padding: 10px;
 }
 
 .diagnosticsDetails {
@@ -952,41 +1039,47 @@ label > span,
   min-width: 0;
 }
 
-.overviewTop {
-  display: flex;
-  flex-wrap: wrap;
+.endpointWorkbench,
+.actionResourceWorkbench,
+.workflowWorkbench,
+.logWorkbench {
+  height: calc(100vh - 214px);
+  height: calc(100dvh - 214px);
+  max-height: calc(100vh - 214px);
+  max-height: calc(100dvh - 214px);
+  min-height: 0;
+}
+
+.overviewPage {
+  height: calc(100vh - 152px);
+  height: calc(100dvh - 152px);
+  max-height: calc(100vh - 152px);
+  max-height: calc(100dvh - 152px);
+  min-height: 590px;
+  grid-template-rows: 190px minmax(0, 1fr);
+  align-content: stretch;
   gap: 12px;
-  align-items: flex-start;
+  overflow: hidden;
 }
 
-.overviewTop > .projectIntro {
-  width: calc(64% - 6px);
-}
-
-.overviewTop > .serviceOverview {
-  width: calc(36% - 6px);
-}
-
-.projectIntro {
+.overviewSummary {
   position: relative;
-  min-height: 216px;
+  height: 100%;
+  min-height: 0;
   display: grid;
-  grid-template-columns: 108px minmax(0, 1fr);
-  align-items: center;
-  gap: 24px;
+  grid-template-columns: minmax(0, 1.25fr) minmax(430px, 0.75fr);
   border-top-color: var(--accent);
   background:
-    linear-gradient(100deg, rgba(24, 209, 255, 0.09), transparent 42%),
+    linear-gradient(100deg, rgba(24, 209, 255, 0.09), transparent 38%),
     rgba(16, 22, 26, 0.95);
-  padding: 26px;
   overflow: hidden;
   clip-path: polygon(0 0, calc(100% - 24px) 0, 100% 24px, 100% 100%, 0 100%);
 }
 
-.projectIntro::before {
+.overviewSummary::before {
   content: 'LOCAL GATEWAY';
   position: absolute;
-  right: 20px;
+  left: 22%;
   bottom: -0.08em;
   color: rgba(244, 247, 248, 0.025);
   font-family: var(--font-display);
@@ -996,7 +1089,7 @@ label > span,
   white-space: nowrap;
 }
 
-.projectIntro::after {
+.overviewSummary::after {
   content: '';
   position: absolute;
   top: 0;
@@ -1007,10 +1100,21 @@ label > span,
   clip-path: polygon(100% 0, 100% 100%, 0 0);
 }
 
+.overviewPrimary {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  align-items: center;
+  gap: 20px;
+  padding: 20px 24px;
+}
+
 .projectLogoPlaceholder {
   position: relative;
-  width: 104px;
-  height: 104px;
+  width: 86px;
+  height: 86px;
   display: grid;
   place-items: center;
   border: 1px solid var(--accent);
@@ -1025,7 +1129,7 @@ label > span,
   box-shadow: inset 0 0 34px rgba(24, 209, 255, 0.06);
   color: var(--text);
   font-family: var(--font-display);
-  font-size: 25px;
+  font-size: 24px;
   font-weight: 800;
   clip-path: polygon(
     0 0,
@@ -1037,7 +1141,7 @@ label > span,
 }
 
 .overviewIdentity > span,
-.overviewSectionHead span,
+.overviewSignalHead > div > span,
 .monitoringHead span,
 .moduleHead span {
   color: var(--muted);
@@ -1048,59 +1152,60 @@ label > span,
 }
 
 .overviewIdentity h2 {
-  margin-top: 8px;
+  margin-top: 7px;
   font-family: var(--font-display);
-  font-size: 28px;
+  font-size: 27px;
   line-height: 1;
 }
 
 .overviewIdentity p {
-  max-width: 680px;
-  margin-top: 8px;
+  max-width: 640px;
+  margin-top: 7px;
   color: var(--text-soft);
   font-size: 12px;
-  line-height: 1.6;
+  line-height: 1.5;
 }
 
-.statusRibbon {
+.overviewStatusLine {
   display: flex;
   flex-wrap: wrap;
-  gap: 1px;
-  margin-top: 18px;
-  border: 1px solid var(--line);
-  background: var(--line);
+  align-items: center;
+  gap: 14px;
+  margin-top: 12px;
 }
 
-.statusRibbon span {
-  min-height: 28px;
+.overviewStatusLine span {
+  min-height: 24px;
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border: 0;
-  border-radius: 0;
-  background: var(--bg-soft);
-  padding: 4px 10px;
   color: var(--muted);
   font-size: 11px;
 }
 
-.statusRibbon span.online {
-  background: var(--green-soft);
+.overviewStatusLine span.online {
   color: var(--green);
 }
 
-.statusRibbon span.offline {
-  background: var(--red-soft);
+.overviewStatusLine span.offline {
   color: var(--red);
 }
 
-.serviceOverview {
-  min-height: 216px;
-  border-top-color: var(--line-strong);
-  padding: 18px;
+.overviewStatusLine span.restricted {
+  color: var(--amber);
 }
 
-.overviewSectionHead,
+.overviewSignalBoard {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-rows: 52px minmax(0, 1fr);
+  border-left: 1px solid var(--line);
+  background: rgba(8, 12, 15, 0.42);
+}
+
+.overviewSignalHead,
 .monitoringHead,
 .moduleHead,
 .connectionSummary,
@@ -1112,7 +1217,7 @@ label > span,
   gap: 12px;
 }
 
-.overviewSectionHead strong,
+.overviewSignalHead strong,
 .monitoringHead strong,
 .actionRegistryHead strong,
 .logSummary strong {
@@ -1123,165 +1228,163 @@ label > span,
   font-size: 16px;
 }
 
-.overviewSectionHead svg {
-  color: var(--accent-2);
+.overviewSignalHead {
+  border-bottom: 1px solid var(--line);
+  padding: 8px 14px;
 }
 
-.serviceMetrics {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1px;
-  margin-top: 18px;
-  border: 1px solid var(--line);
-  border-radius: 0;
-  background: var(--line);
-  overflow: hidden;
-}
-
-.serviceMetrics div {
-  min-height: 64px;
-  display: grid;
-  align-content: center;
+.overviewRefreshState {
+  display: inline-flex;
+  align-items: center;
   gap: 6px;
-  background: var(--bg-soft);
-  padding: 10px 12px;
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
 }
 
-.serviceMetrics span,
-.runtimeMetric span {
+.overviewSignalList {
+  min-height: 0;
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.overviewSignalList > div {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  align-content: center;
+  gap: 4px;
+  border-right: 1px solid var(--line);
+  padding: 12px 14px;
+}
+
+.overviewSignalList > div:last-child {
+  border-right: 0;
+}
+
+.overviewSignalList dt {
   color: var(--muted);
   font-size: 9px;
+  font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
-.serviceMetrics strong {
+.overviewSignalList dd {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  margin: 0;
+}
+
+.overviewSignalList dd strong {
   font-family: var(--font-numeric);
-  font-size: 26px;
+  font-size: 24px;
   font-variant-numeric: tabular-nums;
 }
 
+.overviewSignalList dd span {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.overviewSignalList small {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-content: start;
+  gap: 3px 8px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.overviewSignalList small .healthy {
+  color: var(--green);
+}
+
 .monitoringHead {
-  min-height: 62px;
+  min-height: 52px;
   border-bottom: 1px solid var(--line);
-  padding: 10px 14px;
+  padding: 8px 12px;
 }
 
 .rangeSwitch {
   display: inline-flex;
-  gap: 0;
-  padding: 0;
   border: 1px solid var(--line);
   border-radius: 0;
   background: var(--bg-soft);
 }
 
 .rangeSwitch button {
-  min-width: 56px;
-  min-height: 32px;
+  min-width: 52px;
+  min-height: 30px;
   border: 0;
   border-right: 1px solid var(--line);
   border-radius: 0;
   background: transparent;
+  padding: 4px 9px;
 }
 
 .rangeSwitch button:last-child {
   border-right: 0;
 }
 
-.overviewMetricStrip {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 8px;
-}
-
-.runtimeMetric {
-  position: relative;
-  width: calc((100% - 32px) / 5);
-  min-height: 104px;
-  display: grid;
-  align-content: center;
-  gap: 7px;
-  overflow: hidden;
-  border-top-color: var(--line-strong);
-  padding: 17px 18px;
-}
-
-.runtimeMetric::before {
-  content: '';
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 2px;
-  background: var(--accent);
-}
-
-.runtimeMetric::after {
-  content: 'METRIC';
-  position: absolute;
-  top: 8px;
-  right: 9px;
-  color: var(--muted-2);
-  font-family: var(--font-mono);
-  font-size: 7px;
-  letter-spacing: 0.12em;
-}
-
-.overviewMetricStrip > .runtimeMetric:nth-child(2)::before {
-  background: var(--accent);
-}
-
-.overviewMetricStrip > .runtimeMetric:nth-child(3)::before {
-  background: var(--accent);
-}
-
-.overviewMetricStrip > .runtimeMetric:nth-child(4)::before {
-  background: var(--accent);
-}
-
-.overviewMetricStrip > .runtimeMetric:nth-child(5)::before {
-  background: var(--green);
-}
-
-.runtimeMetric strong {
-  font-family: var(--font-numeric);
-  font-size: 34px;
-  font-variant-numeric: tabular-nums;
-}
-
 .overviewOperationsGrid {
+  height: 100%;
+  min-height: 0;
   display: grid;
-  grid-template-columns: minmax(480px, 1.45fr) minmax(320px, 0.75fr);
+  grid-template-columns: minmax(520px, 1.4fr) minmax(380px, 0.8fr);
   gap: 12px;
-  align-items: start;
+  align-items: stretch;
+  overflow: hidden;
 }
 
 .overviewMonitorColumn {
+  height: 100%;
+  min-height: 0;
   min-width: 0;
   display: grid;
-  align-content: start;
+  align-content: stretch;
   gap: 12px;
 }
 
-.overviewMonitorColumn > .resizablePanel {
-  width: 100%;
+.overviewPrimaryColumn {
+  grid-template-rows: 132px minmax(0, 1fr);
 }
 
-.monitorModule,
-.upcomingActions {
-  min-height: 270px;
-  overflow: auto;
+.overviewSideColumn {
+  grid-template-rows: minmax(0, 1fr);
 }
 
-.trafficModule {
-  min-height: 330px;
+.overviewMonitorColumn > .monitorModule {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.overviewMonitorColumn > .executionOverviewModule,
+.overviewMonitorColumn > .overviewStatusModule {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.trafficControls {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
 }
 
 .moduleHead {
   position: relative;
-  min-height: 58px;
+  min-height: 54px;
   border-bottom: 1px solid var(--line);
-  padding: 10px 12px;
+  padding: 8px 12px;
 }
 
 .moduleHead::before {
@@ -1303,19 +1406,23 @@ label > span,
 .trafficLegend {
   display: flex;
   justify-content: flex-end;
-  gap: 14px;
-  padding: 9px 14px 0;
+  gap: 12px;
   color: var(--muted);
   font-size: 10px;
+  white-space: nowrap;
+}
+
+.trafficLegend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
 }
 
 .trafficLegend span::before {
   content: '';
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   display: inline-block;
-  margin-right: 6px;
-  border-radius: 0;
   background: var(--accent);
 }
 
@@ -1323,27 +1430,45 @@ label > span,
   background: var(--text-soft);
 }
 
+.trafficLegend strong {
+  color: var(--text);
+  font-family: var(--font-numeric);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
 .trafficChart {
-  height: 230px;
+  height: 100%;
+  min-height: 0;
   display: grid;
-  grid-template-columns: repeat(12, minmax(22px, 1fr));
+  grid-template-columns: repeat(12, minmax(8px, 1fr));
   align-items: end;
-  gap: 7px;
+  gap: 6px;
   background-image: linear-gradient(
     to top,
     rgba(138, 234, 255, 0.04) 1px,
     transparent 1px
   );
-  background-size: 100% 25%;
-  padding: 16px 14px 12px;
+  background-size: 100% 50%;
+  padding: 7px 12px 6px;
 }
 
 .trafficColumn {
   min-width: 0;
   height: 100%;
   display: grid;
-  grid-template-rows: minmax(0, 1fr) 18px;
-  gap: 6px;
+  grid-template-rows: 11px minmax(0, 1fr) 14px;
+  gap: 2px;
+}
+
+.trafficBucketCount {
+  min-width: 0;
+  color: var(--text-soft);
+  font-family: var(--font-numeric);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  line-height: 11px;
+  text-align: center;
 }
 
 .trafficBars {
@@ -1356,11 +1481,10 @@ label > span,
 }
 
 .trafficBars i {
-  width: min(12px, 42%);
-  min-height: 3px;
-  border-radius: 0;
+  width: min(10px, 42%);
+  min-height: 2px;
   background: var(--accent);
-  box-shadow: 0 0 12px rgba(24, 209, 255, 0.16);
+  box-shadow: 0 0 10px rgba(24, 209, 255, 0.14);
   transform-origin: bottom;
   animation: metricRise 620ms cubic-bezier(0.22, 0.8, 0.2, 1) both;
 }
@@ -1379,27 +1503,101 @@ label > span,
 .trafficColumn small {
   min-width: 0;
   color: var(--muted-2);
-  font-size: 9px;
+  font-size: 8px;
   overflow: hidden;
   text-align: center;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.overviewEndpointList,
-.overviewFailureList,
-.overviewActionList {
+.trafficEmpty {
+  grid-column: 1 / -1;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  color: var(--muted);
+}
+
+.trafficEmpty span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  font-size: 10px;
+}
+
+.trafficEmpty strong {
+  color: var(--text);
+  font-family: var(--font-numeric);
+  font-size: 20px;
+}
+
+.trafficEmpty small {
+  margin-left: auto;
+  font-size: 10px;
+}
+
+.overviewTabs {
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-bottom: 1px solid var(--line);
+  background: rgba(8, 12, 15, 0.34);
+}
+
+.overviewTabs button {
+  min-width: 0;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 0;
+  border-right: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  padding: 7px 11px;
+}
+
+.overviewTabs button:last-child {
+  border-right: 0;
+}
+
+.overviewTabs button.active {
+  background: var(--accent-soft);
+  box-shadow: inset 0 -2px var(--accent);
+  color: var(--text);
+}
+
+.overviewTabs button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overviewTabs button code {
+  color: var(--accent-2);
+  font-size: 10px;
+}
+
+.overviewExecutionList,
+.overviewStatusList {
+  height: 100%;
+  min-height: 0;
   display: grid;
   align-content: start;
   gap: 6px;
-  padding: 10px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 8px;
+  scrollbar-gutter: stable;
 }
 
-.overviewEndpointList > div,
-.overviewFailureList > div {
-  min-height: 46px;
+.overviewStatusList > div {
+  min-height: 50px;
   display: grid;
-  grid-template-columns: 8px minmax(100px, 0.65fr) minmax(120px, 1fr) auto;
+  grid-template-columns: 8px minmax(110px, 0.7fr) minmax(130px, 1fr) auto;
   align-items: center;
   gap: 9px;
   border-bottom: 1px solid var(--line);
@@ -1409,73 +1607,67 @@ label > span,
     opacity 140ms ease;
 }
 
-.overviewEndpointList > div:hover,
-.overviewFailureList > div:hover {
+.overviewStatusList > div:hover {
   background: var(--accent-soft);
 }
 
-.overviewEndpointList > div > i {
+.overviewStatusList > div > i {
   width: 8px;
   height: 8px;
-  border-radius: 0;
   background: var(--green);
 }
 
-.overviewEndpointList > div.disabled {
+.overviewStatusList > div.disabled {
   opacity: 0.48;
 }
 
-.overviewEndpointList > div.disabled > i {
+.overviewStatusList > div.disabled > i,
+.overviewStatusList > div.idle > i {
   background: var(--muted-2);
 }
 
-.overviewEndpointList span,
-.overviewFailureList span {
+.overviewStatusList > div.run-running > i,
+.overviewStatusList > div.run-queued > i {
+  background: var(--accent);
+}
+
+.overviewStatusList > div.run-failed > i {
+  background: var(--red);
+}
+
+.overviewStatusList > div.run-cancelled > i {
+  background: var(--amber);
+}
+
+.overviewStatusList > .empty {
+  display: flex;
+  border: 0;
+}
+
+.overviewStatusList span {
   min-width: 0;
   display: grid;
   gap: 2px;
 }
 
-.overviewEndpointList small,
-.overviewFailureList small {
+.overviewStatusList small,
+.overviewStatusList code {
   min-width: 0;
+  overflow: hidden;
   color: var(--muted);
   font-size: 10px;
-  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.overviewEndpointList code {
-  min-width: 0;
-  overflow: hidden;
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.overviewEndpointList em {
+.overviewStatusList em {
   color: var(--muted);
   font-size: 10px;
   font-style: normal;
+  white-space: nowrap;
 }
 
-.overviewFailureList > div {
-  grid-template-columns: 18px minmax(0, 1fr) auto;
-}
-
-.overviewFailureList svg {
-  color: var(--red);
-}
-
-.overviewFailureList time {
-  color: var(--muted);
-  font-size: 10px;
-}
-
-.overviewFailureList .healthy {
-  display: flex;
-  border: 0;
+.overviewExecutionList .healthy {
   color: var(--green);
 }
 
@@ -1543,7 +1735,6 @@ label > span,
 
   position: relative;
   min-width: 0;
-  height: max(620px, calc(100vh - 154px));
   display: grid;
   grid-template-columns:
     var(--endpoint-registry-width) 12px
@@ -1865,6 +2056,7 @@ label > span,
 }
 
 .endpointInspector .modalHead,
+.workflowInspector .modalHead,
 .actionInspector .modalHead {
   position: sticky;
   top: 42px;
@@ -1872,12 +2064,14 @@ label > span,
 }
 
 .endpointInspector .modalActions,
+.workflowInspector .modalActions,
 .actionInspector .modalActions {
   position: sticky;
   bottom: 0;
 }
 
 .endpointInspector .modalActions button,
+.workflowInspector .modalActions button,
 .actionInspector .modalActions button {
   width: 100%;
 }
@@ -1978,6 +2172,65 @@ details.endpointLog summary::-webkit-details-marker {
   color: var(--accent-2);
   font-size: 13px;
   overflow-wrap: anywhere;
+}
+
+.endpointMediaCache {
+  display: grid;
+  gap: 6px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.endpointMediaCache h4 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.endpointMediaCacheRow {
+  display: grid;
+  grid-template-columns: minmax(72px, 0.18fr) minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+  border-left: 2px solid var(--muted);
+  padding: 4px 0 4px 8px;
+}
+
+.endpointMediaCacheRow.cached {
+  border-left-color: var(--green);
+}
+
+.endpointMediaCacheRow.failed {
+  border-left-color: var(--red);
+}
+
+.endpointMediaCacheRow > span,
+.endpointMediaCacheRow code,
+.endpointMediaCacheRow small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.endpointMediaCacheRow > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.endpointMediaCacheRow strong,
+.endpointMediaCacheRow small {
+  overflow-wrap: anywhere;
+}
+
+.endpointMediaCacheRow strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.endpointMediaCacheRow code {
+  white-space: nowrap;
 }
 
 .endpointImageUrl {
@@ -2093,6 +2346,51 @@ input[type='radio'] {
   padding: 12px;
 }
 
+.endpointTestDefaults,
+.endpointTestRequestGrid,
+.endpointTestTargets {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.endpointTestDefaults {
+  margin: 0;
+  border: 1px solid var(--line);
+  padding: 10px;
+}
+
+.endpointTestDefaults legend {
+  color: var(--muted);
+  padding: 0 6px;
+}
+
+.endpointTestTargets {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.endpointTestTemplateFields {
+  grid-template-columns: minmax(0, 1fr);
+  max-height: 380px;
+  overflow: auto;
+}
+
+.endpointRawOverride {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.endpointRawOverride summary {
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.75rem;
+}
+
+.endpointRawOverride[open] {
+  display: grid;
+  gap: 10px;
+}
+
 .testTarget code,
 .testResult,
 .actionTrialSummary,
@@ -2155,10 +2453,10 @@ input[type='radio'] {
 
 .actionResourceWorkbench {
   --action-registry-width: clamp(360px, 31%, 640px);
+  --action-inspector-height: 56%;
 
   position: relative;
   min-width: 0;
-  height: max(620px, calc(100vh - 154px));
   display: grid;
   grid-template-columns:
     var(--action-registry-width) 12px
@@ -2189,8 +2487,9 @@ input[type='radio'] {
   display: grid;
   grid-column: 3;
   grid-template-rows:
-    var(--action-inspector-height, minmax(280px, 1.15fr)) 12px
-    minmax(220px, 0.85fr);
+    var(--action-inspector-height) 12px
+    minmax(0, 1fr);
+  gap: 0;
   contain: inline-size;
   overflow: hidden;
 }
@@ -2318,7 +2617,9 @@ input[type='radio'] {
 }
 
 .actionRegistryHead {
-  position: relative;
+  position: sticky;
+  z-index: 3;
+  top: 0;
   min-height: 62px;
   border-bottom: 1px solid var(--line);
   padding: 10px 12px;
@@ -2340,6 +2641,9 @@ input[type='radio'] {
 }
 
 .actionTableHead {
+  position: sticky;
+  z-index: 2;
+  top: 62px;
   min-height: 34px;
   border-bottom: 1px solid var(--line);
   background: var(--bg-soft);
@@ -2533,27 +2837,51 @@ details.actionCard.queued {
 }
 
 .logWorkbench {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  align-items: flex-start;
+  --log-stream-width: minmax(520px, 2.4fr);
+
+  min-width: 0;
+  display: grid;
+  grid-template-columns:
+    var(--log-stream-width) 12px
+    minmax(300px, 1fr);
+  align-items: stretch;
+  overflow: hidden;
+}
+
+.logStreamSlot,
+.logTraceSlot {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.logStreamSlot {
+  grid-column: 1;
+}
+
+.logColumnDivider {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.logTraceSlot {
+  grid-column: 3;
 }
 
 .logCenter {
-  width: calc(72% - 5px);
+  width: 100%;
+  height: 100%;
   min-width: 0;
-}
-
-.logCenter[data-user-sized='true'],
-.logCenter[data-resizing='true'] {
+  min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
-.logCenter[data-user-sized='true'] > .unifiedLogList,
-.logCenter[data-resizing='true'] > .unifiedLogList,
-.logCenter[data-user-sized='true'] > .logConsole,
-.logCenter[data-resizing='true'] > .logConsole {
+.logCenter > .unifiedLogList,
+.logCenter > .logConsole {
   min-height: 0;
   max-height: none;
   flex: 1 1 auto;
@@ -2562,6 +2890,7 @@ details.actionCard.queued {
 .logSummary {
   position: relative;
   min-height: 62px;
+  flex: 0 0 auto;
   border-bottom: 1px solid var(--line);
   padding: 10px 12px;
 }
@@ -2587,14 +2916,20 @@ details.actionCard.queued {
 }
 
 .unifiedLogList {
-  display: grid;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
   gap: 8px;
-  max-height: calc(100vh - 220px);
+  min-height: 0;
+  max-height: none;
+  flex: 1 1 auto;
   overflow: auto;
   padding: 10px;
 }
 
 .unifiedLogEntry {
+  min-height: 62px;
+  flex: 0 0 auto;
   border: 1px solid var(--line);
   border-radius: 0;
   background: var(--bg-soft);
@@ -2714,16 +3049,19 @@ details.actionCard.queued {
 }
 
 .logConsole {
-  min-height: calc(100vh - 220px);
+  min-height: 0;
+  overflow: auto;
 }
 
 .traceInspector {
-  width: calc(28% - 5px);
-  min-width: 260px;
-  position: sticky;
-  top: 18px;
-  max-height: calc(100vh - 36px);
-  overflow: auto;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .traceHead {
@@ -2748,8 +3086,12 @@ details.actionCard.queued {
 }
 
 .traceTimeline {
+  min-height: 0;
   display: grid;
+  align-content: start;
+  flex: 1 1 auto;
   gap: 10px;
+  overflow: auto;
   padding: 12px;
 }
 
@@ -2854,20 +3196,28 @@ details.actionCard.queued {
 }
 
 .workflowWorkbench {
-  --workflow-registry-width: clamp(300px, 34%, 560px);
-  --workflow-top-height: minmax(360px, 0.95fr);
+  --workflow-sidebar-width: clamp(420px, 38%, 680px);
+  --workflow-registry-height: 42%;
 
   position: relative;
   min-width: 0;
-  height: max(720px, calc(100vh - 154px));
   display: grid;
   grid-template-columns:
-    var(--workflow-registry-width) 12px
-    minmax(460px, 1fr);
-  grid-template-rows:
-    var(--workflow-top-height) 12px
-    minmax(320px, 1fr);
+    var(--workflow-sidebar-width) 12px
+    minmax(520px, 1fr);
   align-items: stretch;
+  overflow: hidden;
+}
+
+.workflowSidebar {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-column: 1;
+  grid-row: 1;
+  grid-template-rows:
+    var(--workflow-registry-height) 12px
+    minmax(0, 1fr);
   overflow: hidden;
 }
 
@@ -2888,21 +3238,28 @@ details.actionCard.queued {
 
 .workflowRegistry {
   display: flex;
-  grid-column: 1;
   grid-row: 1;
   flex-direction: column;
   overflow: hidden;
 }
 
+.workflowRegistry > .connectionTable {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
 .workflowInspector {
-  grid-column: 3;
-  grid-row: 1;
-  overflow: auto;
+  grid-row: 3;
+  container-name: workflow-inspector;
+  container-type: inline-size;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .workflowCanvasPanel {
-  grid-column: 1 / -1;
-  grid-row: 3;
+  grid-column: 3;
+  grid-row: 1;
   overflow: auto;
 }
 
@@ -2912,12 +3269,9 @@ details.actionCard.queued {
 }
 
 .workflowRowDivider {
-  grid-column: 1 / -1;
   grid-row: 2;
 }
 
-.workflowRegistryHead,
-.workflowInspectorHead,
 .workflowNodeInspectorHead,
 .workflowCanvasToolbar {
   position: relative;
@@ -2931,8 +3285,6 @@ details.actionCard.queued {
   padding: 10px 12px;
 }
 
-.workflowRegistryHead::after,
-.workflowInspectorHead::after,
 .workflowCanvasToolbar::after {
   content: '';
   position: absolute;
@@ -2943,8 +3295,6 @@ details.actionCard.queued {
   background: var(--accent);
 }
 
-.workflowRegistryHead span,
-.workflowInspectorHead span,
 .workflowNodeInspectorHead span,
 .workflowCanvasToolbar span {
   display: block;
@@ -2954,8 +3304,6 @@ details.actionCard.queued {
   text-transform: uppercase;
 }
 
-.workflowRegistryHead strong,
-.workflowInspectorHead strong,
 .workflowNodeInspectorHead strong,
 .workflowCanvasToolbar strong {
   display: block;
@@ -2965,126 +3313,15 @@ details.actionCard.queued {
   font-size: 16px;
 }
 
-.workflowRegistryHead > div:last-child {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-}
-
-.workflowRegistryHead > div:last-child span {
-  text-align: right;
-}
-
-.workflowRegistryHead > div:last-child strong {
-  font-family: var(--font-numeric);
-  font-size: 17px;
-  font-variant-numeric: tabular-nums;
-}
-
-.workflowRegistryList {
-  display: grid;
-  align-content: start;
-  overflow: auto;
-}
-
-.workflowRegistryItem {
-  min-height: 68px;
-  display: grid;
-  grid-template-columns: 3px minmax(0, 1fr) 32px;
-  align-items: center;
-  gap: 10px;
-  border-bottom: 1px solid var(--line);
-  padding: 7px 10px;
-  cursor: pointer;
-  transition:
-    background-color 140ms ease,
-    box-shadow 140ms ease,
-    opacity 140ms ease;
-}
-
-.workflowRegistryItem:hover,
-.workflowRegistryItem:focus-within,
-.workflowRegistryItem.selected {
-  background: var(--accent-soft);
-  outline: none;
-}
-
-.workflowRegistryItem.selected {
-  box-shadow:
-    inset 3px 0 0 var(--accent),
-    inset 0 0 30px rgba(24, 209, 255, 0.035);
-}
-
-.workflowRegistryItem.disabled {
-  opacity: 0.44;
-  filter: saturate(0.35);
-}
-
-.workflowRegistryItem > i {
-  width: 3px;
-  height: 36px;
-  border-radius: 0;
-  background: var(--accent);
-}
-
-.workflowRegistrySelect {
-  min-width: 0;
-  min-height: 50px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 9px;
-  border: 0;
-  background: transparent;
-  padding: 0;
-  text-align: left;
-}
-
-.workflowRegistrySelect:hover {
-  background: transparent;
-}
-
-.workflowRegistrySelect > span {
-  min-width: 0;
-  display: grid;
-  gap: 4px;
-}
-
-.workflowRegistrySelect strong,
-.workflowRegistrySelect small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workflowRegistrySelect small {
-  color: var(--muted);
-}
-
-.workflowRegistrySelect code {
-  min-width: 26px;
-  color: var(--accent-2);
-  text-align: center;
-}
-
-.workflowRegistryList .dangerIconButton {
-  width: 30px;
-  min-height: 30px;
-  padding: 0;
-}
-
-.workflowTaskFields,
 .workflowCompactGrid {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   display: grid;
   grid-template-columns: repeat(2, minmax(160px, 1fr));
   gap: 8px;
 }
 
-.workflowTaskFields {
-  padding: 10px 12px;
-}
-
-.workflowTaskFields label,
 .workflowCompactGrid label,
 .workflowActionEditor > label,
 .workflowJsonField {
@@ -3094,7 +3331,6 @@ details.actionCard.queued {
   gap: 6px;
 }
 
-.workflowTaskFields label,
 .workflowCompactGrid label {
   border: 1px solid var(--line);
   border-radius: 0;
@@ -3102,25 +3338,23 @@ details.actionCard.queued {
   padding: 8px;
 }
 
-.workflowTaskFields label:focus-within,
 .workflowCompactGrid label:focus-within {
   border-color: var(--accent);
 }
 
-.workflowTaskFields input,
 .workflowCompactGrid input,
 .workflowCompactGrid select,
 .workflowActionEditor > label input {
+  min-width: 0;
+  max-width: 100%;
   width: 100%;
 }
 
-.workflowTaskFields .wideField,
 .workflowCompactGrid .wideField,
 .workflowActionEditor .wideField {
   grid-column: 1 / -1;
 }
 
-.workflowTaskFields .checkField,
 .workflowCompactGrid .checkField {
   min-height: 56px;
   display: flex;
@@ -3134,7 +3368,17 @@ details.actionCard.queued {
   border-top: 1px solid var(--line);
 }
 
+.workflowInspector > .inspectorEditor,
+.workflowInspectorEditor {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
 .workflowNodeEditor {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   display: grid;
   gap: 10px;
   padding: 10px 12px 36px;
@@ -3144,6 +3388,7 @@ details.actionCard.queued {
 .workflowActionEditor,
 .workflowLogicEditor,
 .workflowEdgeEditor {
+  max-width: 100%;
   min-width: 0;
   display: grid;
   gap: 10px;
@@ -3227,6 +3472,32 @@ details.actionCard.queued {
   gap: 7px;
 }
 
+.workflowEdgeEditor > div select {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+@container workflow-inspector (max-width: 460px) {
+  .workflowInspector .formGrid,
+  .workflowInspector .workflowCompactGrid,
+  .workflowInspector .workflowConditionRow,
+  .workflowInspector .workflowEdgeEditor > div {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workflowInspector .wideLabel,
+  .workflowInspector .workflowCompactGrid .wideField,
+  .workflowInspector .workflowActionEditor .wideField {
+    grid-column: auto;
+  }
+
+  .workflowInspector .workflowConditionRow button,
+  .workflowInspector .workflowEdgeEditor > div button {
+    width: 100%;
+  }
+}
+
 .workflowJsonField textarea {
   width: 100%;
   min-height: 92px;
@@ -3249,31 +3520,169 @@ details.actionCard.queued {
   font-size: 12px;
 }
 
-.workflowSimulation {
-  margin: 0 12px 36px;
-  border: 1px solid var(--line);
-  border-radius: 0;
+.workflowNodeTestPanel {
+  min-width: 0;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.workflowNodeTestBody {
+  min-height: 0;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 12px;
+  overflow: auto;
+  padding: 12px 12px 36px;
+}
+
+.workflowTestPlan {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  border-left: 2px solid var(--accent);
+  background: var(--accent-soft);
+  padding: 11px 12px;
+}
+
+.workflowTestPlan > svg {
+  margin-top: 2px;
+  color: var(--accent-2);
+}
+
+.workflowTestPlan strong,
+.workflowTestPlan p {
+  display: block;
+  margin: 0;
+}
+
+.workflowTestPlan p {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.workflowTestFacts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border-top: 1px solid var(--line);
+  border-left: 1px solid var(--line);
+}
+
+.workflowTestFacts > div {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
   background: var(--bg-soft);
   padding: 10px;
 }
 
-.workflowSimulation summary {
-  cursor: pointer;
-  color: var(--text-soft);
-  font-weight: 700;
+.workflowTestFacts span {
+  color: var(--muted);
+  font-size: 10px;
 }
 
-.workflowSimulation textarea {
+.workflowTestFacts code {
+  overflow: hidden;
+  color: var(--text-soft);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workflowTestPayload {
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.workflowTestPayload .testPayload {
   width: 100%;
-  min-height: 120px;
-  margin-top: 10px;
+  min-height: 180px;
+  resize: vertical;
   background: var(--code);
   font-family: var(--font-mono);
+  font-size: 12px;
 }
 
-.workflowSimulation button,
-.workflowSimulation code {
-  margin-top: 8px;
+.workflowTestWarning {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  border-left: 2px solid var(--amber);
+  background: var(--amber-soft);
+  color: var(--amber);
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.workflowTestWarning svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.workflowTestOutcome {
+  display: grid;
+  gap: 5px;
+  border-left: 3px solid var(--accent);
+  background: var(--accent-soft);
+  padding: 10px 12px;
+}
+
+.workflowTestOutcome.success {
+  border-left-color: var(--green);
+  background: var(--green-soft);
+}
+
+.workflowTestOutcome.warning {
+  border-left-color: var(--amber);
+  background: var(--amber-soft);
+}
+
+.workflowTestOutcome.danger {
+  border-left-color: var(--red);
+  background: var(--red-soft);
+}
+
+.workflowTestOutcome strong {
+  color: var(--text);
+}
+
+.workflowTestOutcome code {
+  overflow-wrap: anywhere;
+  color: var(--text-soft);
+  white-space: pre-wrap;
+}
+
+.workflowTestActions {
+  position: sticky;
+  bottom: -36px;
+  z-index: 2;
+  margin-top: auto;
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+  padding-top: 10px;
+}
+
+.workflowTestActions button {
+  width: 100%;
+}
+
+.workflowTestActions .spin {
+  animation: workflowTestSpin 900ms linear infinite;
+}
+
+@keyframes workflowTestSpin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .workflowRuntimeStrip {
@@ -3472,7 +3881,8 @@ details.actionCard.queued {
   pointer-events: none;
 }
 
-.workflowCanvas.connecting {
+.workflowCanvas.connecting,
+.workflowCanvas.disconnecting {
   cursor: crosshair;
 }
 
@@ -3589,9 +3999,23 @@ details.actionCard.queued {
   animation: workflowNodePulse 1.2s ease-in-out infinite;
 }
 
+.workflowNode.disconnecting {
+  border-color: var(--red);
+  box-shadow:
+    0 0 0 2px rgba(255, 107, 120, 0.2),
+    8px 12px 0 rgba(0, 0, 0, 0.32);
+  animation: workflowNodeDisconnectPulse 1.2s ease-in-out infinite;
+}
+
 @keyframes workflowNodePulse {
   50% {
     box-shadow: 0 0 0 5px rgba(24, 209, 255, 0.14);
+  }
+}
+
+@keyframes workflowNodeDisconnectPulse {
+  50% {
+    box-shadow: 0 0 0 5px rgba(255, 107, 120, 0.14);
   }
 }
 
@@ -3876,20 +4300,35 @@ details.actionCard.queued {
   will-change: width, height;
 }
 
+.resizablePanel[data-content-sized='true'][data-resizing='true'] {
+  will-change: width, min-height;
+}
+
+.overviewPage details.actionCard pre {
+  max-height: 140px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .panelResizeHandle {
   position: absolute;
   z-index: 9;
-  right: 3px;
-  bottom: 3px;
-  width: 26px;
-  min-height: 26px;
+  right: 4px;
+  bottom: 4px;
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  display: grid;
+  place-items: center;
   border-color: var(--line-strong);
   border-radius: 0;
   background: rgba(7, 12, 15, 0.96);
   color: var(--accent-2);
   padding: 0;
   cursor: nwse-resize;
-  opacity: 0.82;
+  line-height: 0;
+  opacity: 0.48;
   touch-action: none;
 }
 
@@ -3903,10 +4342,13 @@ details.actionCard.queued {
 .panelResizeReset {
   position: absolute;
   z-index: 9;
-  right: 31px;
-  bottom: 3px;
-  width: 27px;
-  min-height: 27px;
+  right: 36px;
+  bottom: 4px;
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  display: grid;
+  place-items: center;
   border-color: var(--line-strong);
   border-radius: 0;
   background: rgba(7, 12, 15, 0.96);
@@ -3915,13 +4357,16 @@ details.actionCard.queued {
   transition: opacity 120ms ease;
 }
 
+.panelResizeHandle svg,
+.panelResizeReset svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+}
+
 .resizablePanel:hover > .panelResizeReset,
 .resizablePanel:focus-within > .panelResizeReset {
   opacity: 1;
-}
-
-.traceInspector.resizablePanel {
-  position: sticky;
 }
 
 .overviewPage,
@@ -3945,7 +4390,7 @@ details.actionCard.queued {
 }
 
 .sidebarFoot[data-state='online'] svg,
-.statusRibbon span.online svg {
+.overviewStatusLine span.online svg {
   animation: signalPulse 2.2s ease-in-out infinite;
 }
 
@@ -4005,29 +4450,86 @@ details.actionCard.queued {
   }
 }
 
-@media (max-width: 1320px) {
-  .logWorkbench > .resizablePanel {
-    width: 100%;
+@media (max-width: 1100px) {
+  .logWorkbench {
+    height: auto;
+    max-height: none;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(420px, 60vh) minmax(320px, 50vh);
+    gap: 10px;
+    overflow: visible;
   }
 
-  .traceInspector {
-    position: static;
-    max-height: none;
+  .logStreamSlot,
+  .logTraceSlot {
+    height: auto;
+    grid-column: 1;
+  }
+
+  .logStreamSlot {
+    grid-row: 1;
+  }
+
+  .logTraceSlot {
+    grid-row: 2;
+  }
+
+  .logColumnDivider {
+    display: none;
   }
 }
 
 @media (max-width: 1100px) {
-  .overviewOperationsGrid,
+  .overviewPage {
+    height: auto;
+    max-height: none;
+    min-height: 0;
+    grid-template-rows: auto auto;
+    overflow: visible;
+  }
+
+  .overviewSummary {
+    height: auto;
+    min-height: 210px;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .overviewSignalBoard {
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+
+  .overviewOperationsGrid {
+    height: auto;
+    grid-template-columns: minmax(0, 1fr);
+    overflow: visible;
+  }
+
+  .overviewMonitorColumn {
+    height: auto;
+    grid-template-rows: none;
+  }
+
+  .overviewMonitorColumn > .monitorModule {
+    height: auto;
+  }
+
+  .trafficModule {
+    min-height: 140px;
+  }
+
+  .executionOverviewModule {
+    min-height: 280px;
+    max-height: 360px;
+  }
+
+  .overviewStatusModule {
+    min-height: 320px;
+    max-height: 420px;
+  }
+
   .actionRuntimeColumns {
     grid-template-columns: 1fr;
-  }
-
-  .overviewTop > .resizablePanel {
-    width: 100%;
-  }
-
-  .overviewMetricStrip > .resizablePanel {
-    width: calc(50% - 5px);
   }
 
   .endpointToolbarActions,
@@ -4069,6 +4571,7 @@ details.actionCard.queued {
 
   .endpointWorkbench {
     height: auto;
+    max-height: none;
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(420px, auto) minmax(480px, auto) minmax(
         360px,
@@ -4107,20 +4610,29 @@ details.actionCard.queued {
 
   .workflowWorkbench {
     height: auto;
+    max-height: none;
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(360px, auto) minmax(500px, auto) minmax(
-        420px,
-        auto
-      );
+    grid-template-rows: auto minmax(420px, auto);
+    gap: 10px;
+    overflow: visible;
+  }
+
+  .workflowSidebar,
+  .workflowCanvasPanel {
+    height: auto;
+    grid-column: 1;
+  }
+
+  .workflowSidebar {
+    grid-row: 1;
+    grid-template-rows: minmax(360px, auto) minmax(500px, auto);
     gap: 10px;
     overflow: visible;
   }
 
   .workflowRegistry,
-  .workflowInspector,
-  .workflowCanvasPanel {
+  .workflowInspector {
     height: auto;
-    grid-column: 1;
   }
 
   .workflowRegistry {
@@ -4135,7 +4647,7 @@ details.actionCard.queued {
 
   .workflowCanvasPanel {
     min-height: 420px;
-    grid-row: 3;
+    grid-row: 2;
   }
 
   .workflowColumnDivider,
@@ -4217,6 +4729,7 @@ details.actionCard.queued {
 
   .actionResourceWorkbench {
     height: auto;
+    max-height: none;
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(420px, auto) auto;
     gap: 10px;
@@ -4265,6 +4778,25 @@ details.actionCard.queued {
     flex-direction: column;
   }
 
+  .trafficControls {
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: space-between;
+  }
+
+  .diagnosticsHead {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .diagnosticsHeadActions {
+    width: 100%;
+  }
+
+  .diagnosticsHeadActions button {
+    flex: 1 1 0;
+  }
+
   .rangeSwitch {
     width: 100%;
     display: grid;
@@ -4273,10 +4805,6 @@ details.actionCard.queued {
 
   .rangeSwitch button {
     min-width: 0;
-  }
-
-  .overviewMetricStrip > .resizablePanel {
-    width: calc(50% - 5px);
   }
 
   nav {
@@ -4340,10 +4868,6 @@ details.actionCard.queued {
     flex: 1 1 0;
   }
 
-  .projectIntro {
-    grid-template-columns: 1fr;
-  }
-
   .connectionTable,
   .workflowRegistry,
   .actionRegistry {
@@ -4359,13 +4883,17 @@ details.actionCard.queued {
 
   .formGrid,
   .endpointLogHead,
-  .workflowTaskFields,
   .workflowCompactGrid,
   .workflowConditionRow {
     grid-template-columns: 1fr;
   }
 
-  .workflowTaskFields .wideField,
+  .endpointTestDefaults,
+  .endpointTestRequestGrid,
+  .endpointTestTargets {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .workflowCompactGrid .wideField,
   .workflowActionEditor .wideField {
     grid-column: auto;
@@ -4408,30 +4936,63 @@ details.actionCard.queued {
     width: 100%;
   }
 
-  .overviewMetricStrip > .resizablePanel {
-    width: calc(50% - 4px);
-  }
-
-  .overviewMetricStrip > .resizablePanel:nth-child(5) {
-    width: 100%;
-  }
-
-  .statusRibbon {
-    display: grid;
-  }
-
-  .serviceMetrics,
   .actionRuntimeColumns,
   .templateFieldGrid {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .projectIntro {
+  .overviewPrimary {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
     padding: 20px;
   }
 
   .projectLogoPlaceholder {
     width: 78px;
     height: 78px;
+  }
+
+  .overviewIdentity h2 {
+    font-size: 24px;
+  }
+
+  .overviewSignalList > div {
+    grid-template-rows: auto auto auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    padding: 11px 14px;
+  }
+
+  .overviewSignalList {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .overviewSignalList > div:last-child {
+    border-bottom: 0;
+  }
+
+  .overviewStatusList > div {
+    min-height: 64px;
+    grid-template-columns: 8px minmax(0, 1fr) auto;
+  }
+
+  .overviewStatusList > div > i {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .overviewStatusList > div > span {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .overviewStatusList > div > em {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .overviewStatusList > div > code {
+    grid-column: 2 / 4;
+    grid-row: 2;
   }
 }

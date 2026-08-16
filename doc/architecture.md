@@ -46,7 +46,7 @@ WorkflowScheduler -> 持久调度状态 / 时区 / 补执行 -> WorkflowExecutor
 - `index.ts`：组合依赖并注册控制 API。
 - `apiSecurity.ts`：执行来源、CORS、令牌角色和安全审计策略。
 - `networkPolicy.ts`：统一执行入站来源/资源限制与外发地址、端口和负载策略。
-- `runtimePolicy.ts`：在正式服务入口执行 Node.js 安全版本基线。
+- `runtimePolicy.ts`：在正式服务入口报告非阻断的 Node.js 版本建议。
 - `endpointListenerManager.ts`：按 `host:port` 复用底层监听器，并按路径分发 HTTP/WS 消息。
 - `messageTemplateDecoder.ts`：加载模板、校验 JSON、提取稳定字段和生成发送内容。
 - `eventProcessor.ts`：持久化事件、匹配旧规则或工作流触发器。

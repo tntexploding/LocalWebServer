@@ -34,6 +34,7 @@ import {
   type MatchConfig,
   type MessageTemplateField,
   type RuleConfig,
+  type ScheduledWorkflowStatus,
   type WorkflowActionSpec,
   type WorkflowEdge,
   type WorkflowEdgeOutcome,
@@ -48,7 +49,9 @@ import {
   type WorkflowTrigger,
 } from '@las/core';
 import {ResizablePanel} from './ResizablePanel';
+import {WorkflowNodeTestPanel} from './WorkflowNodeTestPanel';
 import {WorkflowSplitLayout} from './WorkflowSplitLayout';
+import {removeWorkflowConnection} from './workflowGraph';
 
 type Translator = (
   key: string,
@@ -81,14 +84,17 @@ interface WorkflowWorkspaceProps {
   templates: TemplateSummary[];
   runs: ActionResult[];
   activeRuns: ActionResult[];
+  schedules: ScheduledWorkflowStatus[];
   t: Translator;
-  onSaveRules: (rules: RuleConfig[], id: string) => Promise<void>;
+  onSaveRules: (rules: RuleConfig[], id: string) => Promise<RuleConfig[]>;
   onSaveRaw: (content: string) => Promise<void>;
   onTest: (eventText: string) => Promise<RuleTestResult>;
+  onRunAction: (id: string) => Promise<ActionResult>;
 }
 
 type RuleStatusFilter = 'all' | 'enabled' | 'disabled';
 type WorkspaceView = 'graph' | 'config';
+type WorkflowInspectorMode = 'config' | 'test';
 
 /** Central visual editor for event-triggered automation workflows. */
 export function WorkflowWorkspace({
@@ -99,15 +105,19 @@ export function WorkflowWorkspace({
   templates,
   runs,
   activeRuns,
+  schedules,
   t,
   onSaveRules,
   onSaveRaw,
   onTest,
+  onRunAction,
 }: WorkflowWorkspaceProps) {
   const [view, setView] = React.useState<WorkspaceView>('graph');
   const [query, setQuery] = React.useState('');
   const [statusFilter, setStatusFilter] =
     React.useState<RuleStatusFilter>('all');
+  const [inspectorMode, setInspectorMode] =
+    React.useState<WorkflowInspectorMode>('config');
   const [originalId, setOriginalId] = React.useState<string | null>(
     rules[0]?.id ?? null,
   );
@@ -120,6 +130,9 @@ export function WorkflowWorkspace({
     draft?.workflow?.startNodeId ?? '',
   );
   const [connectFrom, setConnectFrom] = React.useState<string | null>(null);
+  const [disconnectFrom, setDisconnectFrom] = React.useState<string | null>(
+    null,
+  );
   const [saveError, setSaveError] = React.useState<string | null>(null);
   const [rawDraft, setRawDraft] = React.useState(raw);
   const [testText, setTestText] = React.useState(
@@ -143,11 +156,6 @@ export function WorkflowWorkspace({
   });
   const workflow = draft?.workflow;
   const selectedNode = workflow?.nodes.find(node => node.id === selectedNodeId);
-  const startNode = workflow?.nodes.find(
-    node => node.id === workflow.startNodeId && node.type === 'trigger',
-  );
-  const canSimulateEvent =
-    startNode?.type === 'trigger' && startNode.trigger.type === 'event';
   const selectedWorkflowRun = latestWorkflowRun(originalId, activeRuns, runs);
   const selectedWorkflowDetail = workflowRunDetail(selectedWorkflowRun);
   const previewContext = createExpressionPreviewContext(
@@ -164,6 +172,7 @@ export function WorkflowWorkspace({
     setDraft(next);
     setSelectedNodeId(next.workflow?.startNodeId ?? '');
     setConnectFrom(null);
+    setDisconnectFrom(null);
     setSaveError(null);
   }
 
@@ -173,7 +182,9 @@ export function WorkflowWorkspace({
     setDraft(next);
     setSelectedNodeId(next.workflow?.startNodeId ?? '');
     setConnectFrom(null);
+    setDisconnectFrom(null);
     setSaveError(null);
+    setInspectorMode('config');
   }
 
   async function saveDraft() {
@@ -196,9 +207,12 @@ export function WorkflowWorkspace({
         : -1;
       if (index >= 0) next[index] = stored;
       else next.push(stored);
-      await onSaveRules(next, stored.id);
-      setOriginalId(stored.id);
-      setDraft(stored);
+      const savedRules = await onSaveRules(next, stored.id);
+      const saved = savedRules.find(rule => rule.id === stored.id);
+      if (!saved) throw new Error(t('workflow.error.savedRuleMissing'));
+      const persisted = ensureWorkflow(saved, actions, t);
+      setOriginalId(persisted.id);
+      setDraft(persisted);
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : String(error));
     }
@@ -206,21 +220,26 @@ export function WorkflowWorkspace({
 
   async function deleteRule(rule: RuleConfig) {
     if (!window.confirm(t('common.confirmDelete', {id: rule.id}))) return;
-    await onSaveRules(
+    const savedRules = await onSaveRules(
       rules.filter(item => item.id !== rule.id),
       rule.id,
     );
-    const remaining = rules.filter(item => item.id !== rule.id);
-    const next = remaining[0]
-      ? ensureWorkflow(remaining[0], actions, t)
+    const next = savedRules[0]
+      ? ensureWorkflow(savedRules[0], actions, t)
       : createWorkflowRule([], actions, t);
-    setOriginalId(remaining[0]?.id ?? null);
+    setOriginalId(savedRules[0]?.id ?? null);
     setDraft(next);
     setSelectedNodeId(next.workflow?.startNodeId ?? '');
+    setConnectFrom(null);
+    setDisconnectFrom(null);
   }
 
   function updateWorkflow(next: WorkflowGraph) {
     setDraft(current => (current ? {...current, workflow: next} : current));
+  }
+
+  function updateDraft(patch: Partial<RuleConfig>) {
+    setDraft(current => (current ? {...current, ...patch} : current));
   }
 
   function updateNode(nextNode: WorkflowNode) {
@@ -257,9 +276,19 @@ export function WorkflowWorkspace({
       ),
     });
     setSelectedNodeId(workflow.startNodeId);
+    setConnectFrom(null);
+    setDisconnectFrom(null);
   }
 
   function selectCanvasNode(nodeId: string) {
+    if (disconnectFrom && disconnectFrom !== nodeId && workflow) {
+      updateWorkflow(
+        removeWorkflowConnection(workflow, disconnectFrom, nodeId),
+      );
+      setDisconnectFrom(null);
+      setSelectedNodeId(nodeId);
+      return;
+    }
     if (connectFrom && connectFrom !== nodeId && workflow) {
       const source = workflow.nodes.find(node => node.id === connectFrom);
       const edge: WorkflowEdge = {
@@ -336,7 +365,7 @@ export function WorkflowWorkspace({
 
       {view === 'config' ? (
         <ResizablePanel
-          storageKey="workflow-yaml"
+          storageKey="workflow-yaml-v2"
           className="panel yamlPanel"
           resetLabel={t('common.resetPanelSize')}
         >
@@ -347,6 +376,8 @@ export function WorkflowWorkspace({
             className="codeEditor"
             value={rawDraft}
             onChange={event => setRawDraft(event.target.value)}
+            spellCheck={false}
+            wrap="off"
           />
           <button className="primaryButton" onClick={() => onSaveRaw(rawDraft)}>
             <Save size={16} />
@@ -358,156 +389,43 @@ export function WorkflowWorkspace({
           resizeColumnLabel={t('workflow.resizeRegistry')}
           resizeRowLabel={t('workflow.resizeCanvas')}
           registry={
-            <>
-              <div className="workflowRegistryHead">
-                <div>
-                  <span>{t('workflow.registryDescription')}</span>
-                  <strong>{t('workflow.registry')}</strong>
-                </div>
-                <div>
-                  <span>
-                    <strong>{filteredRules.length}</strong>
-                    {t('rule.visible')}
-                  </span>
-                  <span>
-                    <strong>{rules.filter(rule => rule.enabled).length}</strong>
-                    {t('rule.active')}
-                  </span>
-                </div>
-              </div>
-              <div className="workflowRegistryList">
-                {filteredRules.map(rule => (
-                  <div
-                    className={`workflowRegistryItem${rule.id === originalId ? ' selected' : ''}${rule.enabled ? '' : ' disabled'}`}
-                    key={rule.id}
-                  >
-                    <i />
-                    <button
-                      className="workflowRegistrySelect"
-                      onClick={() => selectRule(rule)}
-                    >
-                      <span>
-                        <strong>{rule.id}</strong>
-                        <small>{workflowSummary(rule, t)}</small>
-                      </span>
-                      <code>{workflowNodeCount(rule)}</code>
-                    </button>
-                    <button
-                      className="dangerIconButton"
-                      title={`${t('common.delete')} ${rule.id}`}
-                      onClick={event => {
-                        event.stopPropagation();
-                        void deleteRule(rule);
-                      }}
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
-                ))}
-                {filteredRules.length === 0 && (
-                  <div className="connectionEmpty">{t('rule.noMatches')}</div>
-                )}
-              </div>
-            </>
+            <WorkflowRuleTable
+              rules={filteredRules}
+              allRules={rules}
+              selectedId={originalId}
+              activeRuns={activeRuns}
+              runs={runs}
+              t={t}
+              onSelect={selectRule}
+              onDelete={rule => void deleteRule(rule)}
+            />
           }
           inspector={
-            <>
-              {draft && workflow ? (
-                <>
-                  <div className="workflowInspectorHead">
-                    <div>
-                      <span>{t('workflow.taskConfiguration')}</span>
-                      <strong>{draft.id}</strong>
-                    </div>
-                    <button
-                      className="primaryButton"
-                      onClick={() => void saveDraft()}
-                    >
-                      <Save size={15} />
-                      {t('common.save')}
-                    </button>
-                  </div>
-                  <div className="workflowTaskFields">
-                    <label>
-                      <span>{t('field.id')}</span>
-                      <input
-                        value={draft.id}
-                        onChange={event =>
-                          setDraft({...draft, id: event.target.value})
-                        }
-                      />
-                    </label>
-                    <label className="checkField">
-                      <input
-                        type="checkbox"
-                        checked={draft.enabled}
-                        onChange={event =>
-                          setDraft({...draft, enabled: event.target.checked})
-                        }
-                      />
-                      <span>{t('field.enabled')}</span>
-                    </label>
-                    <label className="wideField">
-                      <span>{t('field.description')}</span>
-                      <input
-                        value={draft.description ?? ''}
-                        onChange={event =>
-                          setDraft({...draft, description: event.target.value})
-                        }
-                      />
-                    </label>
-                  </div>
-                  <div className="workflowNodeInspectorHead">
-                    <span>{t('workflow.selectedNode')}</span>
-                    <strong>
-                      {selectedNode?.label ?? t('workflow.selectNode')}
-                    </strong>
-                  </div>
-                  {selectedNode ? (
-                    <WorkflowNodeEditor
-                      node={selectedNode}
-                      workflow={workflow}
-                      actions={actions}
-                      endpoints={endpoints}
-                      templates={templates}
-                      previewContext={previewContext}
-                      t={t}
-                      onChange={updateNode}
-                      onChangeWorkflow={updateWorkflow}
-                    />
-                  ) : (
-                    <div className="inspectorEmpty">
-                      {t('workflow.selectNode')}
-                    </div>
-                  )}
-                  {saveError && <div className="inlineError">{saveError}</div>}
-                  {canSimulateEvent && (
-                    <details className="workflowSimulation">
-                      <summary>{t('workflow.simulation')}</summary>
-                      <textarea
-                        value={testText}
-                        onChange={event => setTestText(event.target.value)}
-                      />
-                      <button onClick={() => void runSimulation()}>
-                        <Play size={15} />
-                        {t('workflow.runSimulation')}
-                      </button>
-                      {testResult && (
-                        <code>
-                          {testResult.matches.find(
-                            item => item.ruleId === draft.id,
-                          )?.matched
-                            ? t('workflow.simulationMatched')
-                            : t('workflow.simulationMissed')}
-                        </code>
-                      )}
-                    </details>
-                  )}
-                </>
-              ) : (
-                <div className="inspectorEmpty">{t('workflow.selectTask')}</div>
-              )}
-            </>
+            <WorkflowInspector
+              draft={draft}
+              workflow={workflow}
+              selectedNode={selectedNode}
+              mode={inspectorMode}
+              actions={actions}
+              runs={runs}
+              activeRuns={activeRuns}
+              endpoints={endpoints}
+              templates={templates}
+              previewContext={previewContext}
+              schedules={schedules}
+              testText={testText}
+              testResult={testResult}
+              saveError={saveError}
+              t={t}
+              onModeChange={setInspectorMode}
+              onDraftChange={updateDraft}
+              onNodeChange={updateNode}
+              onWorkflowChange={updateWorkflow}
+              onTestTextChange={setTestText}
+              onSave={() => void saveDraft()}
+              onRunSimulation={runSimulation}
+              onRunAction={onRunAction}
+            />
           }
           canvas={
             <>
@@ -531,17 +449,41 @@ export function WorkflowWorkspace({
                   </button>
                   <button
                     className={connectFrom ? 'active' : ''}
+                    aria-pressed={Boolean(connectFrom)}
                     disabled={!selectedNode || selectedNode.type === 'end'}
                     onClick={() =>
-                      setConnectFrom(current =>
-                        current ? null : selectedNodeId,
-                      )
+                      setConnectFrom(current => {
+                        setDisconnectFrom(null);
+                        return current ? null : selectedNodeId;
+                      })
                     }
                   >
                     {connectFrom ? <Unlink size={14} /> : <Link2 size={14} />}
                     {connectFrom
                       ? t('workflow.cancelConnect')
                       : t('workflow.connect')}
+                  </button>
+                  <button
+                    className={disconnectFrom ? 'active dangerButton' : ''}
+                    aria-pressed={Boolean(disconnectFrom)}
+                    disabled={
+                      !selectedNode ||
+                      selectedNode.type === 'end' ||
+                      !workflow?.edges.some(
+                        edge => edge.from === selectedNode.id,
+                      )
+                    }
+                    onClick={() =>
+                      setDisconnectFrom(current => {
+                        setConnectFrom(null);
+                        return current ? null : selectedNodeId;
+                      })
+                    }
+                  >
+                    <Unlink size={14} />
+                    {disconnectFrom
+                      ? t('workflow.cancelDisconnect')
+                      : t('workflow.disconnect')}
                   </button>
                   <button
                     className="dangerButton"
@@ -564,6 +506,7 @@ export function WorkflowWorkspace({
                   runtime={selectedWorkflowDetail}
                   selectedNodeId={selectedNodeId}
                   connectFrom={connectFrom}
+                  disconnectFrom={disconnectFrom}
                   t={t}
                   onSelect={selectCanvasNode}
                   onMove={(id, position) =>
@@ -583,6 +526,279 @@ export function WorkflowWorkspace({
         />
       )}
     </section>
+  );
+}
+
+function WorkflowRuleTable({
+  rules,
+  allRules,
+  selectedId,
+  activeRuns,
+  runs,
+  t,
+  onSelect,
+  onDelete,
+}: {
+  rules: RuleConfig[];
+  allRules: RuleConfig[];
+  selectedId: string | null;
+  activeRuns: ActionResult[];
+  runs: ActionResult[];
+  t: Translator;
+  onSelect: (rule: RuleConfig) => void;
+  onDelete: (rule: RuleConfig) => void;
+}) {
+  return (
+    <div className="connectionTable workflowConnectionTable">
+      <div className="connectionSummary">
+        <div>
+          <span>{t('workflow.registryDescription')}</span>
+          <strong>{t('workflow.registry')}</strong>
+        </div>
+        <div className="connectionStats">
+          <span>
+            <strong>
+              {rules.length}/{allRules.length}
+            </strong>
+            {t('rule.visible')}
+          </span>
+          <span>
+            <strong>{allRules.filter(rule => rule.enabled).length}</strong>
+            {t('rule.active')}
+          </span>
+        </div>
+      </div>
+      <div className="connectionRows">
+        <div className="connectionTableHead">
+          <span>{t('field.id')}</span>
+          <span>{t('workflow.nodes')}</span>
+          <span>{t('rule.triggerSource')}</span>
+          <span>{t('endpoint.lastActivity')}</span>
+          <span />
+        </div>
+        {rules.map(rule => {
+          const latest = latestWorkflowRun(rule.id, activeRuns, runs);
+          const latestAt =
+            latest?.finishedAt ?? latest?.startedAt ?? latest?.queuedAt;
+          return (
+            <div
+              role="button"
+              tabIndex={0}
+              className={`connectionRow${rule.id === selectedId ? ' selected' : ''}${rule.enabled ? '' : ' disabled'}`}
+              key={rule.id}
+              onClick={() => onSelect(rule)}
+              onKeyDown={event => {
+                if (event.key === 'Enter' || event.key === ' ') onSelect(rule);
+              }}
+            >
+              <span className="connectionIdentity">
+                <i />
+                <strong>{rule.id}</strong>
+                <small
+                  className={
+                    rule.enabled
+                      ? 'statusBadge enabled'
+                      : 'statusBadge disabled'
+                  }
+                >
+                  {t(rule.enabled ? 'common.enabled' : 'common.disabled')}
+                </small>
+              </span>
+              <code>{workflowNodeCount(rule)}</code>
+              <span className="connectionUrl">{workflowSummary(rule, t)}</span>
+              <em>
+                {latestAt
+                  ? new Date(latestAt).toLocaleTimeString()
+                  : t('endpoint.noActivity')}
+              </em>
+              <span className="connectionActions">
+                <button
+                  className="dangerIconButton"
+                  title={`${t('common.delete')} ${rule.id}`}
+                  onClick={event => {
+                    event.stopPropagation();
+                    onDelete(rule);
+                  }}
+                >
+                  <Trash2 size={15} />
+                </button>
+              </span>
+            </div>
+          );
+        })}
+        {rules.length === 0 && (
+          <div className="connectionEmpty">
+            <Search size={20} />
+            <span>{t('rule.noMatches')}</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function WorkflowInspector({
+  draft,
+  workflow,
+  selectedNode,
+  mode,
+  actions,
+  runs,
+  activeRuns,
+  endpoints,
+  templates,
+  previewContext,
+  schedules,
+  testText,
+  testResult,
+  saveError,
+  t,
+  onModeChange,
+  onDraftChange,
+  onNodeChange,
+  onWorkflowChange,
+  onTestTextChange,
+  onSave,
+  onRunSimulation,
+  onRunAction,
+}: {
+  draft: RuleConfig | null;
+  workflow?: WorkflowGraph;
+  selectedNode?: WorkflowNode;
+  mode: WorkflowInspectorMode;
+  actions: ActionConfig[];
+  runs: ActionResult[];
+  activeRuns: ActionResult[];
+  endpoints: EndpointsConfig;
+  templates: TemplateSummary[];
+  previewContext: WorkflowExpressionContext;
+  schedules: ScheduledWorkflowStatus[];
+  testText: string;
+  testResult: RuleTestResult | null;
+  saveError: string | null;
+  t: Translator;
+  onModeChange: (mode: WorkflowInspectorMode) => void;
+  onDraftChange: (patch: Partial<RuleConfig>) => void;
+  onNodeChange: (node: WorkflowNode) => void;
+  onWorkflowChange: (workflow: WorkflowGraph) => void;
+  onTestTextChange: (value: string) => void;
+  onSave: () => void;
+  onRunSimulation: () => Promise<void>;
+  onRunAction: (id: string) => Promise<ActionResult>;
+}) {
+  if (!draft || !workflow) {
+    return (
+      <div className="inspectorEmpty">
+        <Settings2 size={22} />
+        <span>{t('workflow.selectTask')}</span>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="inspectorTabs">
+        <button
+          className={mode === 'config' ? 'active' : ''}
+          onClick={() => onModeChange('config')}
+        >
+          <Settings2 size={15} />
+          {t('workflow.taskConfiguration')}
+        </button>
+        <button
+          className={mode === 'test' ? 'active' : ''}
+          onClick={() => onModeChange('test')}
+        >
+          <Play size={15} />
+          {t('workflow.nodeTest')}
+        </button>
+      </div>
+      {mode === 'config' ? (
+        <div className="inspectorEditor">
+          <section className="inspectorEditorPanel workflowInspectorEditor">
+            <div className="modalHead">
+              <div>
+                <span>{t('workflow.taskConfiguration')}</span>
+                <h2>{draft.id}</h2>
+              </div>
+            </div>
+            <div className="formGrid">
+              {saveError && (
+                <div className="formError wideLabel">{saveError}</div>
+              )}
+              <label>
+                <span>{t('field.id')}</span>
+                <input
+                  value={draft.id}
+                  onChange={event => onDraftChange({id: event.target.value})}
+                />
+              </label>
+              <label className="checkLabel">
+                <input
+                  type="checkbox"
+                  checked={draft.enabled}
+                  onChange={event =>
+                    onDraftChange({enabled: event.target.checked})
+                  }
+                />
+                <span>{t('field.enabled')}</span>
+              </label>
+              <label className="wideLabel">
+                <span>{t('field.description')}</span>
+                <input
+                  value={draft.description ?? ''}
+                  onChange={event =>
+                    onDraftChange({description: event.target.value})
+                  }
+                />
+              </label>
+            </div>
+            <div className="workflowNodeInspectorHead">
+              <span>{t('workflow.selectedNode')}</span>
+              <strong>{selectedNode?.label ?? t('workflow.selectNode')}</strong>
+            </div>
+            {selectedNode ? (
+              <WorkflowNodeEditor
+                node={selectedNode}
+                workflow={workflow}
+                actions={actions}
+                endpoints={endpoints}
+                templates={templates}
+                previewContext={previewContext}
+                t={t}
+                onChange={onNodeChange}
+                onChangeWorkflow={onWorkflowChange}
+              />
+            ) : (
+              <div className="inspectorEmpty">{t('workflow.selectNode')}</div>
+            )}
+            <div className="modalActions">
+              <button className="primaryButton" onClick={onSave}>
+                <Save size={15} />
+                {t('common.save')}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : (
+        <WorkflowNodeTestPanel
+          ruleId={draft.id}
+          ruleEnabled={draft.enabled}
+          node={selectedNode}
+          actions={actions}
+          runs={runs}
+          activeRuns={activeRuns}
+          schedules={schedules}
+          eventText={testText}
+          eventResult={testResult}
+          previewContext={previewContext}
+          t={t}
+          onEventTextChange={onTestTextChange}
+          onRunEvent={onRunSimulation}
+          onRunAction={onRunAction}
+        />
+      )}
+    </>
   );
 }
 
@@ -628,6 +844,7 @@ function WorkflowCanvas({
   runtime,
   selectedNodeId,
   connectFrom,
+  disconnectFrom,
   t,
   onSelect,
   onMove,
@@ -636,6 +853,7 @@ function WorkflowCanvas({
   runtime?: WorkflowRunDetail;
   selectedNodeId: string;
   connectFrom: string | null;
+  disconnectFrom: string | null;
   t: Translator;
   onSelect: (id: string) => void;
   onMove: (id: string, position: WorkflowNodePosition) => void;
@@ -656,7 +874,7 @@ function WorkflowCanvas({
   );
   return (
     <div
-      className={`workflowCanvas${connectFrom ? ' connecting' : ''}`}
+      className={`workflowCanvas${connectFrom ? ' connecting' : ''}${disconnectFrom ? ' disconnecting' : ''}`}
       style={{width: canvasWidth, height: canvasHeight}}
     >
       <svg className="workflowEdges" aria-hidden="true">
@@ -710,6 +928,7 @@ function WorkflowCanvas({
             position={position}
             selected={node.id === selectedNodeId}
             connecting={node.id === connectFrom}
+            disconnecting={node.id === disconnectFrom}
             runtimeStatus={workflowNodeRuntimeStatus(runtime, node.id)}
             t={t}
             onSelect={() => onSelect(node.id)}
@@ -726,6 +945,7 @@ function WorkflowCanvasNode({
   position,
   selected,
   connecting,
+  disconnecting,
   runtimeStatus,
   t,
   onSelect,
@@ -735,6 +955,7 @@ function WorkflowCanvasNode({
   position: WorkflowNodePosition;
   selected: boolean;
   connecting: boolean;
+  disconnecting: boolean;
   runtimeStatus?: WorkflowNodeExecutionStatus;
   t: Translator;
   onSelect: () => void;
@@ -749,7 +970,7 @@ function WorkflowCanvasNode({
   const Icon = nodeIcon(node);
   return (
     <article
-      className={`workflowNode ${node.type}${selected ? ' selected' : ''}${connecting ? ' connecting' : ''}${runtimeStatus ? ` runtime-${runtimeStatus}` : ''}`}
+      className={`workflowNode ${node.type}${selected ? ' selected' : ''}${connecting ? ' connecting' : ''}${disconnecting ? ' disconnecting' : ''}${runtimeStatus ? ` runtime-${runtimeStatus}` : ''}`}
       style={{left: position.x, top: position.y}}
     >
       <button

@@ -26,9 +26,9 @@ npm run dev
 根启动器按以下顺序工作：
 
 1. 从本机 `config/app.yaml` 读取控制 API 地址，从 `config/web.yaml` 读取 Vite 地址。
-2. 检查后端与 WebUI 端口是否可用；端口占用或 Windows 端口权限错误会立即终止并给出明确原因。
-3. 构建共享包，启动后端并等待 `/api/health` 返回成功。
-4. 在 `web.yaml` 指定的地址启动 Vite；不会静默改用其他端口。
+2. 校验 WebUI 来源已列入 `security.corsOrigins`，再检查后端与 WebUI 端口是否可用；来源遗漏、端口占用或 Windows 端口权限错误都会立即终止并给出明确原因。
+3. 构建共享包，然后并行启动后端与 Vite；Vite 不会静默改用其他端口。
+4. 同时等待 `/api/health` 与 WebUI 返回成功；任一端失败都会输出对应诊断并关闭整组进程。
 5. 收到 `Ctrl+C` 或任一子进程异常退出时，关闭整组前后端进程。Windows 下会清理对应的子进程树。
 
 调整 `web.yaml` 后，还需将对应来源加入 `app.yaml` 的 `security.corsOrigins`。开发启动器会把由两份配置计算出的 API 地址传给 Vite，不再使用源代码中的地址或端口回退值。
@@ -40,7 +40,7 @@ npm run format
 npm run check
 ```
 
-`npm run check` 依次执行 Node.js 安全基线、仓库/Git 历史敏感边界、锁文件供应链、非写入
+`npm run check` 依次执行 Node.js 版本建议、仓库/Git 历史敏感边界、锁文件供应链、非写入
 格式、GTS lint、全部工作区类型检查、生产构建、单元测试、独立进程 E2E 和 Chrome 交互
 测试。联网发布前还应单独执行 `npm run audit:dependencies`，获取最新漏洞数据并验证依赖
 签名和来源证明。

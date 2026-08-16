@@ -25,6 +25,10 @@ export async function loadDevelopmentSettings(projectRoot) {
   const apiBase = `http://${formatUrlHost(connectHost(backendHost))}:${backendPort}`;
   const webUrl = `http://${formatUrlHost(connectHost(webHost))}:${webPort}/ui/`;
   const previewUrl = `http://${formatUrlHost(connectHost(webHost))}:${previewPort}/ui/`;
+  const corsOrigins = requiredOrigins(
+    appConfig?.security?.corsOrigins,
+    'config/app.yaml security.corsOrigins',
+  );
   return {
     backendHost,
     backendPort,
@@ -34,7 +38,19 @@ export async function loadDevelopmentSettings(projectRoot) {
     apiBase,
     webUrl,
     previewUrl,
+    corsOrigins,
   };
+}
+
+/** Rejects a dev or preview page that the control API would block via CORS. */
+export function assertDevelopmentOriginAllowed(settings, mode = 'dev') {
+  const pageUrl = mode === 'preview' ? settings.previewUrl : settings.webUrl;
+  const origin = new URL(pageUrl).origin;
+  if (settings.corsOrigins.includes(origin)) return;
+  throw new Error(
+    `${origin} is not listed in config/app.yaml security.corsOrigins. ` +
+      'Add the exact WebUI origin and restart the development command.',
+  );
 }
 
 async function readYaml(filePath) {
@@ -64,6 +80,16 @@ function requiredPort(value, name) {
     throw new Error(`${name} must be an integer between 1 and 65535.`);
   }
   return port;
+}
+
+function requiredOrigins(value, name) {
+  if (
+    !Array.isArray(value) ||
+    value.some(origin => typeof origin !== 'string')
+  ) {
+    throw new Error(`${name} must be an array of exact HTTP(S) origins.`);
+  }
+  return value;
 }
 
 function connectHost(host) {

@@ -18,10 +18,13 @@ export type EndpointTestKind =
 
 /** Optional request values supplied by the WebUI connection tester. */
 export interface EndpointTestOptions {
+  mode?: 'probe' | 'send';
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   path?: string;
   body?: unknown;
   useTemplate?: boolean;
+  templateFields?: string[];
+  templateValues?: Record<string, unknown>;
 }
 
 /** Result of one HTTP or WebSocket endpoint probe. */
@@ -104,9 +107,15 @@ export class EndpointTester {
       );
       if (!endpoint) throw new Error(`Unknown HTTP client: ${id}`);
       assertEnabled(endpoint.enabled, `HTTP client is disabled: ${id}`);
+      const mode =
+        options.mode ??
+        (options.body !== undefined || options.useTemplate ? 'send' : 'probe');
       const base = new URL(endpoint.baseUrl);
       const targetUrl = new URL(
-        options.path?.trim() || '/api/health',
+        options.path?.trim() ||
+          (mode === 'send'
+            ? (endpoint.test?.sendPath ?? '/')
+            : (endpoint.test?.probePath ?? '/api/health')),
         endpoint.baseUrl,
       );
       if (targetUrl.origin !== base.origin) {
@@ -114,17 +123,28 @@ export class EndpointTester {
       }
       const target = targetUrl.toString();
       const requestBody =
-        options.body !== undefined
-          ? options.body
-          : options.useTemplate && endpoint.template
-            ? await this.messageTemplates.materialize(
-                endpoint.template,
-                endpoint.templateValues ?? {},
-                endpoint.templateFields,
-              )
-            : undefined;
+        mode === 'probe'
+          ? undefined
+          : options.body !== undefined
+            ? options.body
+            : options.useTemplate && endpoint.template
+              ? await this.messageTemplates.materialize(
+                  endpoint.template,
+                  {
+                    ...endpoint.templateValues,
+                    ...options.templateValues,
+                  },
+                  options.templateFields ?? endpoint.templateFields,
+                )
+              : undefined;
+      const method =
+        options.method ??
+        (mode === 'probe'
+          ? 'GET'
+          : (endpoint.test?.sendMethod ??
+            (requestBody === undefined ? 'GET' : 'POST')));
       const response = await this.fetch(target, {
-        ...httpTestInit({...options, body: requestBody}),
+        ...httpTestInit({...options, method, body: requestBody}),
         headers: {
           ...endpoint.headers,
           ...(requestBody === undefined ||

@@ -15,6 +15,10 @@
 ### 1.1 接口
 
 ```http
+GET http://127.0.0.1:8765/health
+```
+
+```http
 POST http://127.0.0.1:8765/v1/messages
 Content-Type: application/json
 ```
@@ -28,18 +32,18 @@ Content-Type: application/json
 Authorization: Bearer <auth_token>
 ```
 
-目标 QQ 会话必须提前在对应群聊或私聊中绑定：
-
-```text
-/interconnect bind main_group
-```
+标准直发只使用 `target.id + target.conversation_type` 查找插件自动记录的 QQ 会话，
+不依赖 `/interconnect bind` 或人工别名。目标会话应先发送一条能命中 QQ 到 HTTP
+路由的消息，以便插件自动记录或刷新 AstrBot 发送地址。别名仅用于 README 所述的
+最终人工兜底请求，不属于 LAS 的 QQ-AIC 标准发送表单。
 
 ### 1.2 最小文本请求
 
 ```json
 {
   "target": {
-    "alias": "main_group"
+    "id": "123456",
+    "conversation_type": "qq_group"
   },
   "content": {
     "text": "来自本地 HTTP 服务的消息"
@@ -52,7 +56,8 @@ Authorization: Bearer <auth_token>
 ```json
 {
   "target": {
-    "alias": "main_group"
+    "id": "123456",
+    "conversation_type": "qq_group"
   },
   "content": {
     "images": [
@@ -82,9 +87,11 @@ Authorization: Bearer <auth_token>
     }
   },
   "target": {
-    "type": "qq_session_alias",
-    "id": "",
-    "alias": "main_group",
+    "type": "qq_session",
+    "id": "123456",
+    "conversation_type": "qq_group",
+    "platform": "aiocqhttp",
+    "alias": "",
     "extra": {}
   },
   "sender": {
@@ -172,15 +179,19 @@ Authorization: Bearer <auth_token>
 
 ### 1.7 `target` 字段
 
-| 字段    | 必需     | 类型   | 默认值             | 说明                                     |
-| ------- | -------- | ------ | ------------------ | ---------------------------------------- |
-| `type`  | 否       | string | `qq_session_alias` | 当前已实现的 QQ 目标类型。               |
-| `alias` | 条件必需 | string | `""`               | 由 `/interconnect bind` 创建的会话别名。 |
-| `id`    | 条件必需 | string | `""`               | 可以代替 `alias` 保存会话别名。          |
-| `extra` | 否       | object | `{}`               | 目标扩展信息；当前 QQ 发送端不使用。     |
+| 字段                | 必需         | 类型   | 默认值       | 说明                                           |
+| ------------------- | ------------ | ------ | ------------ | ---------------------------------------------- |
+| `type`              | 否           | string | `qq_session` | 当前直发类型；旧值 `qq_session_alias` 仍兼容。 |
+| `id`                | 标准直发必需 | string | `""`         | 群号、QQ 号或平台 OpenID。                     |
+| `conversation_type` | 标准直发必需 | string | `""`         | `qq_group` 或 `qq_private`。                   |
+| `source_type`       | 否           | string | `""`         | `conversation_type` 的兼容名称。               |
+| `platform`          | 否           | string | `""`         | 多适配器存在相同 ID 时用于消歧。               |
+| `alias`             | 兜底         | string | `""`         | `/interconnect bind` 创建的备用会话别名。      |
+| `extra`             | 否           | object | `{}`         | 兼容扩展信息。                                 |
 
-当 `type` 为 `qq_session_alias` 时，`alias` 与 `id` 至少提供一个。若两者
-同时存在，插件优先使用 `alias`。
+LAS 的 QQ-AIC 标准发送固定填写 `id + conversation_type`，并且不会生成
+`alias`。plugin_ic 自身仍兼容 alias-only 的最后兜底请求，但应在确认会话地址无法
+自动记录后手工使用，不应写入正常端点或自动化动作。
 
 省略 `target` 或传入空对象时，消息不会直接指定 QQ 会话，而是进入
 `local_to_qq` 路由匹配。
@@ -200,12 +211,20 @@ Authorization: Bearer <auth_token>
 
 ### 1.9 `content` 字段
 
-| 字段       | 必需     | 类型     | 默认值 | 说明                                                 |
-| ---------- | -------- | -------- | ------ | ---------------------------------------------------- |
-| `text`     | 条件必需 | string   | `""`   | 发送至 QQ 的文本。                                   |
-| `images`   | 条件必需 | object[] | `[]`   | 要发送的图片列表。                                   |
-| `mentions` | 否       | string[] | `[]`   | QQ 号列表；当前 HTTP 到 QQ 方向尚不会生成 `@` 组件。 |
-| `extra`    | 否       | object   | `{}`   | 内容级自定义字段。                                   |
+| 字段          | 必需     | 类型     | 默认值 | 说明                                                 |
+| ------------- | -------- | -------- | ------ | ---------------------------------------------------- |
+| `text`        | 条件必需 | string   | `""`   | 发送至 QQ 的文本。                                   |
+| `images`      | 条件必需 | object[] | `[]`   | 要发送的图片列表。                                   |
+| `videos`      | 接收只读 | object[] | `[]`   | QQ 到 Webhook 标准化的视频列表。                     |
+| `files`       | 接收只读 | object[] | `[]`   | QQ 到 Webhook 标准化的文件列表。                     |
+| `attachments` | 接收只读 | object[] | `[]`   | 音频等通用媒体附件。                                 |
+| `links`       | 接收只读 | object[] | `[]`   | Share 组件或 JSON 卡片提取出的链接内容。             |
+| `forwards`    | 接收只读 | object[] | `[]`   | 已尝试展开的 QQ 合并转发消息。                       |
+| `mentions`    | 否       | string[] | `[]`   | QQ 号列表；当前 HTTP 到 QQ 方向尚不会生成 `@` 组件。 |
+| `extra`       | 否       | object   | `{}`   | 内容级自定义字段。                                   |
+
+HTTP 到 QQ 方向目前只实现文本与图片发送。其余媒体、链接与转发字段用于接收
+QQbot 的标准 Webhook，不会出现在发送表单中。
 
 ### 1.10 图片字段
 
@@ -254,36 +273,13 @@ Authorization: Bearer <auth_token>
 }
 ```
 
-对应 route 配置：
-
-```json
-{
-  "id": "alerts_to_main_group",
-  "enabled": true,
-  "direction": "local_to_qq",
-  "source": {
-    "type": "http_endpoint",
-    "endpoint_id": "alerts"
-  },
-  "targets": [
-    {
-      "type": "qq_session_alias",
-      "alias": "main_group"
-    }
-  ]
-}
-```
-
 当前调度顺序如下：
 
-1. 插件首先匹配所有启用的 `local_to_qq` 路由。
-2. 如果存在匹配路由，消息发送至路由定义的全部目标。
-3. 如果不存在匹配路由，且请求提供了非 `local` 类型的 `target`，插件直接
-   使用该目标发送。
-4. 如果没有匹配路由，也没有直接目标，请求返回投递失败。
+1. 请求包含非空 `target` 时，直接发送到该 QQ 会话。
+2. 请求省略 `target` 时，匹配启用的 `local_to_qq` 路由。
+3. 路由没有命中时返回投递失败。
 
-因此，即使请求包含 `target`，只要它同时匹配某条 `local_to_qq` 路由，当前
-实现仍会优先使用路由目标。
+因此测试发送应优先填写明确目标；路由只用于调用方无法在请求中携带目标的情况。
 
 ## 3. 插件 HTTP 响应
 
@@ -296,10 +292,10 @@ Authorization: Bearer <auth_token>
   "results": [
     {
       "target": {
-        "type": "qq_session_alias",
-        "id": "",
-        "alias": "main_group",
-        "extra": {}
+        "type": "qq_session",
+        "id": "123456",
+        "alias": "",
+        "extra": {"source_type": "qq_group"}
       },
       "ok": true,
       "message": "sent"
@@ -317,13 +313,13 @@ Authorization: Bearer <auth_token>
   "results": [
     {
       "target": {
-        "type": "qq_session_alias",
-        "id": "",
-        "alias": "unknown_group",
-        "extra": {}
+        "type": "qq_session",
+        "id": "123456",
+        "alias": "",
+        "extra": {"source_type": "qq_group"}
       },
       "ok": false,
-      "message": "QQ session alias 'unknown_group' is not bound."
+      "message": "QQ session '123456' has not been recorded."
     }
   ]
 }
@@ -357,8 +353,9 @@ Authorization: Bearer <auth_token>
 
 ## 4. QQ 消息推送至本地 HTTP Webhook
 
-只有通过 `/interconnect bind <alias>` 显式绑定的 QQ 群聊或私聊会话，才
-允许进入 QQ 到本地的路由和 Webhook 投递流程。
+QQ 入站是否转发只由 plugin_ic 的 `routes` 决定，不以
+`/interconnect bind <alias>` 为前置条件。命中入站路由后，插件会自动记录该会话的
+AstrBot 发送地址，供后续按 `target.id + target.conversation_type` 反向发送。
 
 插件按照 route 中的 Webhook URL 发出请求：
 
@@ -373,6 +370,7 @@ Content-Type: application/json
 {
   "schema_version": "1.0",
   "event_type": "message",
+  "message_type": "text",
   "message_id": "qq-message-id",
   "direction": "qq_to_local",
   "route_id": "main_group_to_webhook",
@@ -408,6 +406,11 @@ Content-Type: application/json
   "content": {
     "text": "来自 QQ 的消息",
     "images": [],
+    "videos": [],
+    "files": [],
+    "attachments": [],
+    "links": [],
+    "forwards": [],
     "mentions": [],
     "extra": {}
   },
@@ -428,50 +431,79 @@ Content-Type: application/json
 | ---------------- | ------ | -------------------------------------------- |
 | `schema_version` | string | 协议版本，默认 `1.0`。                       |
 | `event_type`     | string | 事件类型，当前固定为 `message`。             |
+| `message_type`   | string | 正文类型，见下方消息类型表。                 |
 | `message_id`     | string | QQ/AstrBot 消息 ID；无法获取时生成 UUID。    |
 | `direction`      | string | 固定为 `qq_to_local`。                       |
 | `route_id`       | string | 实际匹配并执行的 route ID。                  |
 | `source`         | object | QQ 群聊或私聊来源。                          |
 | `target`         | object | 当前 Webhook 投递目标。                      |
 | `sender`         | object | QQ 消息发送者。                              |
-| `content`        | object | 标准化文本、图片和提及对象。                 |
+| `content`        | object | 标准化正文、媒体、链接、转发和提及对象。     |
 | `raw_refs`       | object | AstrBot 和平台原始消息引用，可通过配置省略。 |
 | `timestamp`      | string | UTC ISO 8601 时间戳。                        |
 | `extra`          | object | 消息级扩展字段，可通过配置省略。             |
 
 ### 4.3 `source` 可填值
 
-| 字段                  | 可能值                   | 说明                                     |
-| --------------------- | ------------------------ | ---------------------------------------- |
-| `type`                | `qq_group`、`qq_private` | 根据消息是否来自 QQ 群自动确定。         |
-| `id`                  | 群号或 QQ 号             | 群消息使用群号，私聊使用发送者 QQ 号。   |
-| `alias`               | 已绑定会话别名           | 由 `/interconnect bind` 的绑定记录注入。 |
-| `extra.group_id`      | 群号或空字符串           | 私聊通常为空。                           |
-| `extra.user_id`       | QQ 号                    | 消息发送者 QQ 号。                       |
-| `extra.platform`      | AstrBot 平台名           | 例如 `aiocqhttp`。                       |
-| `extra.session_alias` | 已绑定会话别名           | 与 `source.alias` 一致。                 |
+| 字段                  | 可能值                   | 说明                                   |
+| --------------------- | ------------------------ | -------------------------------------- |
+| `type`                | `qq_group`、`qq_private` | 根据消息是否来自 QQ 群自动确定。       |
+| `id`                  | 群号或 QQ 号             | 群消息使用群号，私聊使用发送者 QQ 号。 |
+| `alias`               | 自动或人工备用名称       | 可能由插件自动记录；不是路由前置条件。 |
+| `extra.group_id`      | 群号或空字符串           | 私聊通常为空。                         |
+| `extra.user_id`       | QQ 号                    | 消息发送者 QQ 号。                     |
+| `extra.platform`      | AstrBot 平台名           | 例如 `aiocqhttp`。                     |
+| `extra.session_alias` | 插件记录的备用名称       | 与 `source.alias` 一致；直发无需填写。 |
 
-### 4.4 `content.images` 图片对象
+### 4.4 消息类型与媒体对象
 
-QQ 图片会转换为与 HTTP 入站图片相同的 `MediaRef` 结构：
+`event_type` 是协议事件类别，目前固定为 `message`；`message_type` 才表示
+正文类型，可取 `text`、`image`、`video`、`file`、`audio`、`forward`、
+`link`、`mixed` 或 `unknown`。消息同时包含多类正文时使用 `mixed`。
+
+QQ 图片、视频和文件分别写入 `content.images`、`content.videos` 和
+`content.files`。三者使用同一 `MediaRef` 结构：
 
 ```json
 {
   "media_id": "qq-message-id-image-0",
   "kind": "image",
-  "source_type": "url",
-  "url": "https://example.com/image.png",
-  "file_path": "",
+  "source_type": "file",
+  "url": "",
+  "file_path": "C:/AstrBot/data/plugin_data/astrbot_plugin_interconnect/media/sha256.png",
+  "name": "image.png",
   "mime_type": "image/png",
-  "sha256": "",
-  "extra": {}
+  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "size_bytes": 2048,
+  "extra": {
+    "cached": true,
+    "original_url": "https://temporary.qq-cdn.example/image.png"
+  }
 }
 ```
 
-其中 `source_type` 可能为 `url`、`file` 或 `unknown`。插件在 QQ 到 Webhook
-方向仅标准化引用，不会为了生成标准包体而强制下载图片。
+`kind` 对应 `image`、`video` 或 `file`；`source_type` 可能为 `url`、
+`file`、`base64` 或 `unknown`。文件名称优先来自 QQ 组件的 `name`，否则由
+URL 或文件路径推导。视频封面等非通用信息保存在 `extra`。
 
-### 4.5 Webhook 接收方响应要求
+接收插件会在投递 Webhook 前尝试把图片、视频、文件和音频立即写入受容量与
+过期时间限制的插件缓存。缓存成功时，`file_path` 是稳定本地引用，`sha256`
+和 `size_bytes` 描述实际内容，临时 URL 仅保存在 `extra.original_url` 供排错；
+缓存失败时保留原始引用并在 `extra.cache_error` 中说明原因。远程下载只允许
+公共 HTTP(S) 地址，并受 MIME、超时、单文件大小和总缓存容量限制。
+
+旧版适配器曾将视频与文件降级为空 `content`；LAS 仍把这类历史包体识别为
+有效兼容消息，但无法恢复源端当时没有发送的内容。
+
+### 4.5 链接与合并转发
+
+`content.links` 保存 Share 组件和 JSON 卡片中提取出的 `kind`、`url`、
+`title`、`summary`、`image_url`，并在 `payload` 中保留经过深度、数量和长度
+限制的结构化卡片。`content.forwards` 保存 `forward_id`，并通过 QQ API 尝试
+展开 `nodes`；每个节点包含 `sender_id`、`sender_name`、`time`、`text` 和
+受限的原始 `segments`。展开失败不会丢弃转发 ID，具体原因会写入插件日志。
+
+### 4.6 Webhook 接收方响应要求
 
 本地 Webhook 收到消息后应返回任意 `2xx` 状态码。插件只检查 HTTP 状态
 码，不解析响应正文。
@@ -490,8 +522,8 @@ QQ 图片会转换为与 HTTP 入站图片相同的 `MediaRef` 结构：
   "enabled": true,
   "direction": "qq_to_local",
   "source": {
-    "type": "*",
-    "alias": "main_group"
+    "type": "qq_group",
+    "id": "123456"
   },
   "targets": [
     {
@@ -547,6 +579,7 @@ QQ 图片会转换为与 HTTP 入站图片相同的 `MediaRef` 结构：
 {
   "event": "qq_message",
   "version": "${schema_version}",
+  "message_type": "${message_type}",
   "id": "${message_id}",
   "text": "${content.text}",
   "sender": {
@@ -554,6 +587,10 @@ QQ 图片会转换为与 HTTP 入站图片相同的 `MediaRef` 结构：
     "name": "${sender.name}"
   },
   "images": "${content.images}",
+  "videos": "${content.videos}",
+  "files": "${content.files}",
+  "links": "${content.links}",
+  "forwards": "${content.forwards}",
   "original": "${envelope}"
 }
 ```
@@ -563,6 +600,7 @@ QQ 图片会转换为与 HTTP 入站图片相同的 `MediaRef` 结构：
 ```text
 ${schema_version}
 ${event_type}
+${message_type}
 ${message_id}
 ${direction}
 ${route_id}
@@ -575,6 +613,11 @@ ${sender.platform}
 ${sender.group_id}
 ${content.text}
 ${content.images}
+${content.videos}
+${content.files}
+${content.attachments}
+${content.links}
+${content.forwards}
 ${content.mentions}
 ${raw_refs}
 ${envelope}

@@ -1,14 +1,20 @@
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {assertSecureRuntime, loadReleasePolicy} from './runtime-policy.mjs';
+import {loadReleasePolicy, runtimeRecommendation} from './runtime-policy.mjs';
 
 const rootDir = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const policy = await loadReleasePolicy(rootDir);
-assertSecureRuntime(
+const recommendation = runtimeRecommendation(
   process.versions.node,
-  policy.minimumNodeVersion,
-  policy.supportedNodeMajor,
+  policy.recommendedNodeVersion,
+  policy.recommendedNodeMajor,
 );
-console.log(
-  `Node.js ${process.versions.node} satisfies security baseline ${policy.minimumNodeVersion}.`,
-);
+if (recommendation) {
+  console.warn(
+    `Node.js recommendation: ${recommendation} Startup will continue.`,
+  );
+} else {
+  console.log(
+    `Node.js ${process.versions.node} matches the recommended runtime policy.`,
+  );
+}

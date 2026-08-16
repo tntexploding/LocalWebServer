@@ -623,6 +623,11 @@ export interface EndpointsConfig {
     template?: string;
     templateFields?: string[];
     templateValues?: Record<string, unknown>;
+    test?: {
+      probePath: string;
+      sendMethod: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+      sendPath: string;
+    };
   }>;
   wsClients: Array<{
     id: string;

@@ -1,7 +1,8 @@
 import {randomUUID} from 'node:crypto';
 import {
-  firstJsonPathValue,
+  evaluateWorkflowLogic,
   resolveWorkflowExpressions,
+  workflowLogicInput,
   type ActionConfig,
   type ActionResult,
   type EventEnvelope,
@@ -184,8 +185,8 @@ export class WorkflowExecutor {
             error: executed.result.error,
           });
         } else if (node.type === 'logic') {
-          const input = logicInput(node, branch.context);
-          const matched = evaluateLogic(node, branch.context);
+          const input = workflowLogicInput(node, branch.context);
+          const matched = evaluateWorkflowLogic(node, branch.context);
           outcome = matched ? 'true' : 'false';
           nextContext = addNodeContext(branch.context, node.id, {
             status: 'completed',
@@ -485,38 +486,6 @@ export class WorkflowExecutor {
       }
     }
   }
-}
-
-function evaluateLogic(
-  node: Extract<WorkflowNode, {type: 'logic'}>,
-  context: WorkflowExpressionContext,
-): boolean {
-  if (node.logic.operator === 'success')
-    return context.last.result?.ok === true;
-  const value = logicInput(node, context);
-  if (node.logic.operator === 'truthy') return Boolean(value);
-  if (node.logic.operator === 'contains') {
-    return String(value ?? '').includes(String(node.logic.value ?? ''));
-  }
-  if (node.logic.operator === 'regex') {
-    return new RegExp(String(node.logic.value ?? '')).test(String(value ?? ''));
-  }
-  return JSON.stringify(value) === JSON.stringify(node.logic.value);
-}
-
-function logicInput(
-  node: Extract<WorkflowNode, {type: 'logic'}>,
-  context: WorkflowExpressionContext,
-): unknown {
-  const source =
-    node.logic.input === 'triggerEvent'
-      ? context.trigger
-      : node.logic.input === 'lastEvent'
-        ? context.last.event
-        : context.last.result;
-  return node.logic.jsonPath
-    ? firstJsonPathValue(source, node.logic.jsonPath)
-    : source;
 }
 
 function addNodeContext(

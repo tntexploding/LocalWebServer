@@ -306,11 +306,11 @@ test(
     assert.equal(deniedOrigin.headers.get('access-control-allow-origin'), null);
     const allowedOrigin = await apiFetch(runtime.baseUrl, '/api/config', {
       token: testTokens.read,
-      headers: {origin: 'http://127.0.0.1:5277'},
+      headers: {origin: 'http://127.0.0.1:4177'},
     });
     assert.equal(
       allowedOrigin.headers.get('access-control-allow-origin'),
-      'http://127.0.0.1:5277',
+      'http://127.0.0.1:4177',
     );
 
     const auditPath = path.join(project.root, 'data', 'security-audit.jsonl');

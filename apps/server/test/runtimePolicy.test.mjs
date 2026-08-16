@@ -3,27 +3,29 @@ import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import {assertSupportedRuntime} from '../dist/runtimePolicy.js';
+import {reportRuntimeRecommendation} from '../dist/runtimePolicy.js';
 
-test('runtime policy accepts the active supported major', async t => {
+test('runtime policy accepts a runtime matching the recommendation', async t => {
   const root = await temporaryPolicyRoot(t, {
     schemaVersion: 1,
-    minimumNodeVersion: '0.0.1',
-    supportedNodeMajor: Number(process.versions.node.split('.')[0]),
+    recommendedNodeVersion: '0.0.1',
+    recommendedNodeMajor: Number(process.versions.node.split('.')[0]),
   });
-  await assert.doesNotReject(assertSupportedRuntime(root));
+  assert.equal(await reportRuntimeRecommendation(root), true);
 });
 
-test('runtime policy rejects an unsupported security baseline', async t => {
+test('runtime policy warns without blocking an older runtime', async t => {
   const root = await temporaryPolicyRoot(t, {
     schemaVersion: 1,
-    minimumNodeVersion: '99.0.0',
-    supportedNodeMajor: Number(process.versions.node.split('.')[0]),
+    recommendedNodeVersion: '99.0.0',
+    recommendedNodeMajor: Number(process.versions.node.split('.')[0]),
   });
-  await assert.rejects(
-    assertSupportedRuntime(root),
-    /below the security baseline/u,
+  const warnings = [];
+  assert.equal(
+    await reportRuntimeRecommendation(root, message => warnings.push(message)),
+    false,
   );
+  assert.match(warnings[0], /startup will continue/u);
 });
 
 async function temporaryPolicyRoot(t, policy) {

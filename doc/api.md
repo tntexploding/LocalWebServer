@@ -57,6 +57,37 @@
 
 `POST /api/queue/:id/cancel` 同时支持普通动作运行 ID 和工作流运行 ID。取消工作流会继续取消其当前子动作、事件等待或选择框。
 
+### 端点测试
+
+HTTP 客户端测试明确区分连接探测和真实发送：
+
+- `mode: "probe"` 使用端点 `test.probePath`（默认 `/api/health`）发送无正文 `GET`，不会
+  物化消息模板。
+- `mode: "send"` 使用端点 `test.sendMethod` 与 `test.sendPath`，可直接提供 `body`，或通过
+  `useTemplate`、`templateFields` 和 `templateValues` 生成请求体。
+
+```json
+{
+  "kind": "httpClient",
+  "id": "local-http-client",
+  "mode": "send",
+  "useTemplate": true,
+  "templateFields": [
+    "$.target.id",
+    "$.target.conversation_type",
+    "$.content.text"
+  ],
+  "templateValues": {
+    "$.target.id": "123456",
+    "$.target.conversation_type": "qq_group",
+    "$.content.text": "hello from LAS"
+  }
+}
+```
+
+省略 `mode` 时，为兼容旧调用：提供 `body` 或启用模板即视为发送，否则视为探测。HTTP
+服务端测试仍对其实际监听 URL 发起请求；WebSocket 测试检查服务端握手或客户端连接状态。
+
 `GET /api/queue` 的 `schedules[]` 包含 `ruleId`、`mode` 与 ISO 格式的
 `nextRunAt`，并可包含 `lastRunAt` 和 `timeZone`。运行中的流程记录包含实时
 `detail.currentNodeIds` 与 `detail.timeline`。

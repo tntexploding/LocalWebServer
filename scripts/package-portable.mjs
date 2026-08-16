@@ -131,7 +131,6 @@ const portablePackage = {
   version: sourcePackage.version,
   private: true,
   type: 'module',
-  engines: sourcePackage.engines,
   scripts: {
     start: 'runtime\\node.exe apps/server/dist/index.js',
     'secrets:init': 'runtime\\node.exe scripts/init-secrets.mjs',

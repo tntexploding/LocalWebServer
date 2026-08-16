@@ -32,6 +32,7 @@ const SENSITIVE_QUERY_KEY =
   /^(?:api[_-]?key|access[_-]?token|auth|authorization|credential|password|secret|token)$/iu;
 const CONFIG_REFERENCE =
   /\$\{(?:secret:[A-Za-z][A-Za-z0-9_.-]*|env:[A-Za-z_][A-Za-z0-9_]*)\}|\$\{\{/u;
+const REDACTED = '[REDACTED]';
 
 /** Raw YAML source for every editable configuration document. */
 export type RawConfigFiles = Record<ConfigDocumentName, string>;
@@ -200,11 +201,7 @@ export class ConfigStore {
     value: Record<string, unknown>,
   ): Promise<LoadedConfig> {
     return this.runExclusive(async () => {
-      await this.secretStore.load();
-      const protectedValue = this.secretStore.protect(value) as Record<
-        string,
-        unknown
-      >;
+      const protectedValue = await this.protectValue(name, value);
       return (await this.prepare({[name]: {value: protectedValue}})).config;
     });
   }
@@ -214,11 +211,7 @@ export class ConfigStore {
     value: Record<string, unknown>,
   ): Promise<LoadedConfig> {
     return this.runExclusive(async () => {
-      await this.secretStore.load();
-      const protectedValue = this.secretStore.protect(value) as Record<
-        string,
-        unknown
-      >;
+      const protectedValue = await this.protectValue(name, value);
       const prepared = await this.prepare({
         [name]: {value: protectedValue},
       });
@@ -227,6 +220,20 @@ export class ConfigStore {
       await this.writeDocument(name, prepared.sources[name], 'save');
       return prepared.config;
     });
+  }
+
+  private async protectValue(
+    name: ConfigDocumentName,
+    value: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    await this.secretStore.load();
+    const currentSource = await this.readConfigFile(name);
+    const current = migrateConfigDocument(
+      name,
+      YAML.parse(currentSource) as unknown,
+    ).value;
+    const restored = restoreRedactedValues(value, current);
+    return this.secretStore.protect(restored) as Record<string, unknown>;
   }
 
   private async prepare(
@@ -475,7 +482,7 @@ function assertNoInlineSensitiveValues(
       !CONFIG_REFERENCE.test(item)
     ) {
       throw new InlineSecretError(
-        `${itemPath} must use a \${secret:name}, \${env:NAME}, or workflow expression reference.`,
+        `${itemPath} must use a \${secret:name}, \${env:NAME}, or workflow expression reference. Run npm run secrets:init to migrate local inline credentials.`,
       );
     }
     assertNoInlineUrlCredential(item, itemPath);
@@ -514,4 +521,43 @@ class InlineSecretError extends Error {
     super(message);
     this.name = 'InlineSecretError';
   }
+}
+
+function restoreRedactedValues(
+  candidate: unknown,
+  current: unknown,
+  key = '',
+): unknown {
+  if (
+    candidate === REDACTED &&
+    SENSITIVE_CONFIG_KEY.test(key) &&
+    typeof current === 'string'
+  ) {
+    return current;
+  }
+  if (Array.isArray(candidate)) {
+    const currentItems = Array.isArray(current) ? current : [];
+    return candidate.map((item, index) => {
+      const itemId = isRecord(item) ? item.id : undefined;
+      const matching =
+        typeof itemId === 'string'
+          ? currentItems.find(
+              currentItem => isRecord(currentItem) && currentItem.id === itemId,
+            )
+          : currentItems[index];
+      return restoreRedactedValues(item, matching, key);
+    });
+  }
+  if (!isRecord(candidate)) return candidate;
+  const currentRecord = isRecord(current) ? current : {};
+  return Object.fromEntries(
+    Object.entries(candidate).map(([entryKey, item]) => [
+      entryKey,
+      restoreRedactedValues(item, currentRecord[entryKey], entryKey),
+    ]),
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

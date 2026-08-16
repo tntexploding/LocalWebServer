@@ -16,7 +16,15 @@ wsServers:
     path: /ws/control
     description: Local example WebSocket listener.
 
-httpClients: []
+httpClients:
+  - id: local-http-client
+    enabled: false
+    baseUrl: http://127.0.0.1:8765
+    description: Example outbound HTTP integration.
+    test:
+      probePath: /health
+      sendMethod: POST
+      sendPath: /v1/messages
 wsClients:
   - id: local-ws-client
     enabled: false

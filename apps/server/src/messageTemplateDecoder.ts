@@ -121,7 +121,9 @@ export class MessageTemplateDecoder {
             .map(({field, value}) => [field.key, value]),
         ),
         displayItems: extracted
-          .filter(({field}) => field.roles.display)
+          .filter(({field, value}) =>
+            Boolean(field.roles.display && hasMeaningfulValue(value)),
+          )
           .sort(
             (left, right) =>
               (left.field.displayOrder ?? Number.MAX_SAFE_INTEGER) -
@@ -479,13 +481,15 @@ function firstDisplayItemValue(
   path: string,
   paths: string[] | undefined,
 ): {path: string; value: unknown} {
+  let firstDefined: {path: string; value: unknown} | undefined;
   for (const candidate of [path, ...(paths ?? [])]) {
     const value = firstJsonPathValue(body, candidate);
     if (value !== undefined) {
-      return {path: candidate, value};
+      firstDefined ??= {path: candidate, value};
+      if (hasMeaningfulValue(value)) return {path: candidate, value};
     }
   }
-  return {path, value: undefined};
+  return firstDefined ?? {path, value: undefined};
 }
 
 function simplifyErrors(

@@ -16,8 +16,8 @@ security:
   corsOrigins:
     - 'http://127.0.0.1:4789'
     - 'http://localhost:4789'
-    - 'http://127.0.0.1:5277'
-    - 'http://localhost:5277'
+    - 'http://127.0.0.1:4177'
+    - 'http://localhost:4177'
   allowedCommandRoots: []
   allowedExecutables: []
   commandEnvironmentAllowlist:

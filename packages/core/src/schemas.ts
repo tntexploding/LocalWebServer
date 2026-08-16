@@ -481,6 +481,15 @@ export const endpointsConfigSchema = z.object({
         template: z.string().min(1).optional(),
         templateFields: z.array(z.string().startsWith('$.')).optional(),
         templateValues: z.record(z.unknown()).optional(),
+        test: z
+          .object({
+            probePath: z.string().startsWith('/').default('/api/health'),
+            sendMethod: z
+              .enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])
+              .default('POST'),
+            sendPath: z.string().startsWith('/').default('/'),
+          })
+          .optional(),
       }),
     )
     .default([]),

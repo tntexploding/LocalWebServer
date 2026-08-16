@@ -124,6 +124,37 @@ export function assertValidApiSecurityPolicy(
   }
 }
 
+/** Adds one exact loopback WebUI origin for the current dev process only. */
+export function withDevelopmentCorsOrigin(
+  security: AppConfig['security'],
+  origin: string | undefined,
+): AppConfig['security'] {
+  if (!origin) return security;
+  let parsed: URL;
+  try {
+    parsed = new URL(origin);
+  } catch {
+    throw new ApiSecurityPolicyError(
+      `Invalid development WebUI origin: ${origin}`,
+    );
+  }
+  const hostname = parsed.hostname
+    .replace(/^\[/u, '')
+    .replace(/\]$/u, '')
+    .toLowerCase();
+  if (
+    parsed.protocol !== 'http:' ||
+    parsed.origin !== origin ||
+    (hostname !== 'localhost' && !addressMatchesRule(hostname, 'loopback'))
+  ) {
+    throw new ApiSecurityPolicyError(
+      `Development WebUI origin must be an exact loopback HTTP origin: ${origin}`,
+    );
+  }
+  if (security.corsOrigins.includes(origin)) return security;
+  return {...security, corsOrigins: [...security.corsOrigins, origin]};
+}
+
 /** Matches exact IPv4/IPv6 values, CIDR ranges, loopback, or a legacy '*'. */
 export function addressMatchesRule(address: string, rule: string): boolean {
   const normalizedAddress = normalizeAddress(address);

@@ -3,12 +3,15 @@ import path from 'node:path';
 
 interface ReleasePolicy {
   schemaVersion: number;
-  minimumNodeVersion: string;
-  supportedNodeMajor: number;
+  recommendedNodeVersion: string;
+  recommendedNodeMajor: number;
 }
 
-/** Enforces the tracked, security-supported Node.js range at server startup. */
-export async function assertSupportedRuntime(codeRoot: string): Promise<void> {
+/** Reports a Node.js recommendation without preventing local startup. */
+export async function reportRuntimeRecommendation(
+  codeRoot: string,
+  warn: (message: string) => void = message => console.warn(message),
+): Promise<boolean> {
   const source = await readFile(
     path.join(codeRoot, 'release.config.json'),
     'utf8',
@@ -16,24 +19,27 @@ export async function assertSupportedRuntime(codeRoot: string): Promise<void> {
   const policy = JSON.parse(source) as Partial<ReleasePolicy>;
   if (
     policy.schemaVersion !== 1 ||
-    !isVersion(policy.minimumNodeVersion) ||
-    typeof policy.supportedNodeMajor !== 'number' ||
-    !Number.isInteger(policy.supportedNodeMajor)
+    !isVersion(policy.recommendedNodeVersion) ||
+    typeof policy.recommendedNodeMajor !== 'number' ||
+    !Number.isInteger(policy.recommendedNodeMajor)
   ) {
     throw new Error('release.config.json contains an invalid runtime policy.');
   }
   const current = process.versions.node;
   const currentParts = versionParts(current);
-  if (currentParts[0] !== policy.supportedNodeMajor) {
-    throw new Error(
-      `Node.js ${current} is unsupported; this service requires Node.js ${policy.supportedNodeMajor}.x.`,
+  if (currentParts[0] !== policy.recommendedNodeMajor) {
+    warn(
+      `Node.js ${current} differs from the recommended Node.js ${policy.recommendedNodeMajor}.x runtime; startup will continue, but compatibility is not guaranteed.`,
     );
+    return false;
   }
-  if (compareVersions(current, policy.minimumNodeVersion) < 0) {
-    throw new Error(
-      `Node.js ${current} is below the security baseline ${policy.minimumNodeVersion}.`,
+  if (compareVersions(current, policy.recommendedNodeVersion) < 0) {
+    warn(
+      `Node.js ${current} is older than the recommended ${policy.recommendedNodeVersion} runtime; startup will continue.`,
     );
+    return false;
   }
+  return true;
 }
 
 function compareVersions(left: string, right: string): number {

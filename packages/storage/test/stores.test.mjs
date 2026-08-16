@@ -84,12 +84,24 @@ test('migrates, versions, validates, restores, and redacts config files', async 
         maxLogFiles: 2,
       },
     }),
-    writeJson(path.join(configDir, 'endpoints.yaml'), {}),
+    writeJson(path.join(configDir, 'endpoints.yaml'), {
+      httpClients: [
+        {
+          id: 'protected-client',
+          enabled: true,
+          baseUrl: 'http://example.invalid',
+          headers: {authorization: '${secret:pluginAuthorization}'},
+        },
+      ],
+    }),
     writeJson(path.join(configDir, 'rules.yaml'), {rules: []}),
     writeJson(path.join(configDir, 'actions.yaml'), {actions: []}),
     writeJson(path.join(configDir, 'secrets.yaml'), {
       version: 1,
-      secrets: {apiToken: 'test-private-token-0000000000000000000'},
+      secrets: {
+        apiToken: 'test-private-token-0000000000000000000',
+        pluginAuthorization: 'Bearer test-plugin-authorization',
+      },
     }),
   ]);
   const store = new ConfigStore(root);
@@ -121,14 +133,39 @@ test('migrates, versions, validates, restores, and redacts config files', async 
   );
   assert.equal((await store.listHistory()).length, 4);
 
-  await store.saveEndpoints({
-    ...loaded.endpoints,
+  const redactedEndpoints = store.redact(loaded).endpoints;
+  assert.equal(
+    redactedEndpoints.httpClients[0].headers.authorization,
+    '[REDACTED]',
+  );
+  const savedEndpoints = await store.saveEndpoints({
+    ...redactedEndpoints,
     httpServers: [
-      {id: 'inbound', enabled: true, path: '/message', description: 'new'},
+      {id: 'inbound', enabled: false, path: '/message', description: 'new'},
     ],
   });
+  assert.equal(savedEndpoints.endpoints.httpServers[0].enabled, false);
+  const protectedEndpoints = (await store.loadRaw()).endpoints;
+  assert.equal(protectedEndpoints.includes('[REDACTED]'), false);
+  assert.equal(
+    protectedEndpoints.includes('${secret:pluginAuthorization}'),
+    true,
+  );
   const revisions = await store.listHistory('endpoints');
   assert.ok(revisions.length >= 2);
+  const savedRules = await store.saveRules([
+    {
+      id: 'disabled-rule',
+      enabled: false,
+      when: {anySource: true},
+      then: [],
+    },
+  ]);
+  assert.equal(savedRules.rules[0].enabled, false);
+  assert.equal(
+    YAML.parse((await store.loadRaw()).rules).rules[0].enabled,
+    false,
+  );
   const beforeInvalid = (await store.loadRaw()).rules;
   await assert.rejects(
     store.saveRules([

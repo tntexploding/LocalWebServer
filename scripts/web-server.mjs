@@ -2,7 +2,10 @@ import {spawn} from 'node:child_process';
 import {createRequire} from 'node:module';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {loadDevelopmentSettings} from './development-settings.mjs';
+import {
+  assertDevelopmentOriginAllowed,
+  loadDevelopmentSettings,
+} from './development-settings.mjs';
 
 const mode = process.argv[2];
 if (mode !== 'dev' && mode !== 'preview') {
@@ -13,6 +16,7 @@ const codeRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const projectRoot = path.resolve(process.env.LAS_ROOT_DIR ?? codeRoot);
 const webRoot = path.join(codeRoot, 'apps', 'web');
 const settings = await loadDevelopmentSettings(projectRoot);
+assertDevelopmentOriginAllowed(settings, mode);
 const requireFromWeb = createRequire(path.join(webRoot, 'package.json'));
 const vitePackagePath = requireFromWeb.resolve('vite/package.json');
 const vitePackage = requireFromWeb(vitePackagePath);

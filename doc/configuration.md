@@ -34,13 +34,14 @@ security:
   readToken: '${secret:readToken}'
   requireTokenForRead: true
   allowedApiSources: ['127.0.0.1', '::1']
-  corsOrigins: ['http://127.0.0.1:5277']
+  corsOrigins: ['http://127.0.0.1:4177']
 ```
 
 `${secret:name}` 从忽略版本控制的 `config/secrets.yaml` 读取，`${env:NAME}` 从进程环境
 读取。缺失引用会阻止启动或保存；结构化保存会把已知密钥值重新保护为引用。
 解析后的三个角色令牌必须至少 32 字符且互不相同。原始配置接口会拒绝敏感字段或敏感
-URL 查询参数中的明文值。
+URL 查询参数中的明文值。已有本机配置包含内联 `Authorization`、Cookie、Token 或
+Password 时，先运行 `npm run secrets:init` 自动迁移，再重新启动服务。
 
 网络策略示例：
 
@@ -121,14 +122,25 @@ httpClients:
     baseUrl: http://127.0.0.1:8765
     template: qq-aic-message-template.json
     templateFields:
-      - $.target.alias
+      - $.target.id
+      - $.target.conversation_type
       - $.content.text
+      - $.content.images
     templateValues:
-      $.target.alias: main_group
+      $.target.id: '123456'
+      $.target.conversation_type: qq_group
       $.content.text: hello
+    test:
+      probePath: /health
+      sendMethod: POST
+      sendPath: /v1/messages
 ```
 
 `templateFields` 决定界面显式编辑的字段；模板会从 `minimum.body` 和字段默认值补齐必填内容，并按模板设置裁剪空值。
+`test` 分别保存只验证服务与鉴权的健康检查路径，以及会真实投递模板消息的发送方法和路径。连接测试面板允许临时修改模板字段，但不会把测试值写回配置。
+QQ-AIC 标准直发必须填写 `target.id` 与 `target.conversation_type`。LAS 不会在该
+模板的标准发送表单中生成 `target.alias`；别名只属于 plugin_ic README 所述的最终
+人工兜底方案。
 
 WS 客户端是长期连接；保存端点后会主动连接，并可配置指数退避重连和 ping/pong 心跳：
 

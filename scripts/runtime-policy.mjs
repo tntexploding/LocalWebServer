@@ -10,9 +10,9 @@ export async function loadReleasePolicy(rootDir) {
   const policy = JSON.parse(source);
   if (
     policy?.schemaVersion !== 1 ||
-    !isVersion(policy.minimumNodeVersion) ||
-    !Number.isInteger(policy.supportedNodeMajor) ||
-    policy.supportedNodeMajor < 1 ||
+    !isVersion(policy.recommendedNodeVersion) ||
+    !Number.isInteger(policy.recommendedNodeMajor) ||
+    policy.recommendedNodeMajor < 1 ||
     !isVersion(policy.runtime?.version) ||
     policy.runtime?.platform !== 'win-x64' ||
     policy.runtime?.downloadBaseUrl !== 'https://nodejs.org/dist' ||
@@ -22,8 +22,9 @@ export async function loadReleasePolicy(rootDir) {
     throw new Error('release.config.json is invalid.');
   }
   if (
-    versionParts(policy.runtime.version)[0] !== policy.supportedNodeMajor ||
-    compareVersions(policy.runtime.version, policy.minimumNodeVersion) < 0 ||
+    versionParts(policy.runtime.version)[0] !== policy.recommendedNodeMajor ||
+    compareVersions(policy.runtime.version, policy.recommendedNodeVersion) <
+      0 ||
     policy.runtime.archive !==
       `node-v${policy.runtime.version}-${policy.runtime.platform}.zip`
   ) {
@@ -32,18 +33,15 @@ export async function loadReleasePolicy(rootDir) {
   return policy;
 }
 
-/** Rejects Node releases older than the security baseline. */
-export function assertSecureRuntime(current, minimum, supportedMajor) {
-  if (versionParts(current)[0] !== supportedMajor) {
-    throw new Error(
-      `Node.js ${current} is unsupported; this release requires Node.js ${supportedMajor}.x.`,
-    );
+/** Describes a runtime mismatch without preventing local startup. */
+export function runtimeRecommendation(current, recommended, recommendedMajor) {
+  if (versionParts(current)[0] !== recommendedMajor) {
+    return `Node.js ${current} differs from the recommended Node.js ${recommendedMajor}.x runtime; compatibility is not guaranteed.`;
   }
-  if (compareVersions(current, minimum) < 0) {
-    throw new Error(
-      `Node.js ${current} is below the security baseline ${minimum}. Update Node.js before starting the service.`,
-    );
+  if (compareVersions(current, recommended) < 0) {
+    return `Node.js ${current} is older than the recommended ${recommended} runtime; update when practical.`;
   }
+  return undefined;
 }
 
 export function compareVersions(left, right) {

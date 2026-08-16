@@ -14,9 +14,10 @@ npm run secrets:init
 ```
 
 `npm run secrets:init` 会创建 `config/secrets.yaml`，为管理、操作和只读角色生成随机令牌，
-并将 `app.yaml` 中对应字段改为 `${secret:apiToken}` 一类引用。也可以使用
-`${env:LAS_ADMIN_TOKEN}` 从环境变量读取值。密钥文件、环境变量和值本身都不会由配置
-历史或 WebUI 原始配置接口返回。
+并将 `app.yaml` 中对应字段改为 `${secret:apiToken}` 一类引用。它还会扫描四份主配置，
+把 `Authorization`、Cookie、Token、Password 等敏感字段中的内联值迁入密钥文件。也可以
+使用 `${env:LAS_ADMIN_TOKEN}` 从环境变量读取值。密钥文件、环境变量和值本身都不会由
+配置历史或 WebUI 原始配置接口返回。
 
 旧版 `app.yaml` 若省略了过去由程序隐式补充的字段，请先执行
 `npm run config:normalize`。该命令只从 `app.example.yaml` 复制缺失字段，不覆盖已有值；
@@ -31,6 +32,13 @@ npm run secrets:init
 第二份固定地址。
 
 消息模板需要单独放入本机的 `config/templates/`。不要在模板中保存令牌、Cookie、密码、真实用户标识或不应公开的业务协议样例。
+
+HTTP 客户端可用 `test.probePath` 配置只检查服务和鉴权的健康路径，并用
+`test.sendMethod`、`test.sendPath` 配置真实消息测试。以 plugin_ic 为例，分别使用
+`GET /health` 与 `POST /v1/messages`；鉴权继续放在客户端 `headers` 中。
+QQ 群聊直发按 plugin_ic 的标准请求填写 `target.id` 和
+`target.conversation_type: qq_group`，不要把 `/interconnect bind` 产生的别名写入
+常规端点配置。
 
 `rules.yaml` 的自动化流程格式见
 [`doc/workflow_automation.md`](../doc/workflow_automation.md)。图形界面与 YAML 直接对应，

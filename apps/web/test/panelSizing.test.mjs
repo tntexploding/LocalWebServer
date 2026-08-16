@@ -69,16 +69,25 @@ test('rejects incomplete or invalid persisted dimensions', () => {
   assert.equal(parsePanelSize('not-json'), null);
 });
 
-test('keeps free-form log panels on independent flex tracks', async () => {
-  const css = await readFile(
-    new URL('../src/styles.css', import.meta.url),
-    'utf8',
-  );
-  const block = css.match(/\.logWorkbench \{([^}]+)\}/)?.[1];
+test('uses a dedicated bounded split layout for logs', async () => {
+  const [css, source, layoutSource] = await Promise.all([
+    readFile(new URL('../src/styles.css', import.meta.url), 'utf8'),
+    readFile(new URL('../src/main.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/LogSplitLayout.tsx', import.meta.url), 'utf8'),
+  ]);
+  const block = [...css.matchAll(/\.logWorkbench \{([^}]+)\}/g)]
+    .map(match => match[1])
+    .find(candidate => /display:\s*grid/.test(candidate));
   assert.ok(block, 'missing .logWorkbench style block');
-  assert.match(block, /display:\s*flex/);
-  assert.match(block, /align-items:\s*flex-start/);
-  assert.doesNotMatch(block, /align-items:\s*stretch/);
+  assert.match(block, /display:\s*grid/);
+  assert.match(block, /--log-stream-width/);
+  assert.match(block, /align-items:\s*stretch/);
+  assert.match(block, /overflow:\s*hidden/);
+  assert.match(source, /<LogSplitLayout/);
+  assert.doesNotMatch(source, /storageKey="logs-(stream|trace)"/);
+  assert.equal((layoutSource.match(/orientation="vertical"/g) ?? []).length, 1);
+  assert.match(layoutSource, /logs-stream/);
+  assert.match(layoutSource, /logs-trace/);
 });
 
 test('isolates the action detail panels from each other', async () => {
@@ -90,13 +99,17 @@ test('isolates the action detail panels from each other', async () => {
   assert.ok(workbench, 'missing .actionResourceWorkbench style block');
   assert.match(workbench, /display:\s*grid/);
   assert.match(workbench, /--action-registry-width/);
+  assert.match(workbench, /--action-inspector-height/);
   assert.match(workbench, /overflow:\s*hidden/);
   const block = css.match(/\.actionLibraryDetails \{([^}]+)\}/)?.[1];
   assert.ok(block, 'missing .actionLibraryDetails style block');
   assert.match(block, /display:\s*grid/);
-  assert.match(block, /--action-inspector-height/);
+  assert.match(block, /var\(--action-inspector-height\)/);
+  assert.match(block, /gap:\s*0/);
   assert.match(block, /contain:\s*inline-size/);
   assert.match(block, /overflow:\s*hidden/);
+  assert.match(block, /minmax\(0,\s*1fr\)/);
+  assert.doesNotMatch(block, /0\.85fr/);
   const rowDivider = css.match(/\.actionRowDivider \{([^}]+)\}/)?.[1];
   assert.ok(rowDivider, 'missing .actionRowDivider style block');
   assert.match(rowDivider, /grid-column:\s*1/);
@@ -119,8 +132,8 @@ test('uses one fixed column and row divider for automation tasks', async () => {
   const block = css.match(/\.workflowWorkbench \{([^}]+)\}/)?.[1];
   assert.ok(block, 'missing .workflowWorkbench style block');
   assert.match(block, /display:\s*grid/);
-  assert.match(block, /--workflow-registry-width/);
-  assert.match(block, /--workflow-top-height/);
+  assert.match(block, /--workflow-sidebar-width/);
+  assert.match(block, /--workflow-registry-height/);
   assert.match(source, /<WorkflowSplitLayout/);
   assert.doesNotMatch(
     source,
@@ -131,6 +144,19 @@ test('uses one fixed column and row divider for automation tasks', async () => {
     (layoutSource.match(/orientation="horizontal"/g) ?? []).length,
     1,
   );
+  assert.match(
+    layoutSource,
+    /className="workflowSidebar"[\s\S]+className="workflowRegistry"[\s\S]+className="workflowRowDivider"[\s\S]+className="workflowInspector"/,
+  );
+  assert.match(
+    layoutSource,
+    /className="workflowColumnDivider"[\s\S]+className="workflowCanvasPanel"/,
+  );
+  const sidebar = css.match(/\.workflowSidebar \{([^}]+)\}/)?.[1];
+  assert.ok(sidebar, 'missing .workflowSidebar style block');
+  assert.match(sidebar, /minmax\(0,\s*1fr\)/);
+  assert.doesNotMatch(sidebar, /0\.58fr/);
+  assert.match(css, /@container workflow-inspector \(max-width:\s*460px\)/);
 });
 
 test('uses two fixed column dividers for endpoint panels', async () => {

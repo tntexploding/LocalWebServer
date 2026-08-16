@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "minimumNodeVersion": "24.18.1",
-  "supportedNodeMajor": 24,
+  "recommendedNodeVersion": "24.18.1",
+  "recommendedNodeMajor": 24,
   "runtime": {
     "version": "24.18.1",
     "platform": "win-x64",

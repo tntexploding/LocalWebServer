@@ -2,5 +2,5 @@ version: 1
 
 # Development-only Vite listener settings. Copy this file to web.yaml.
 host: '127.0.0.1'
-port: 5277
-previewPort: 5278
+port: 4177
+previewPort: 4178

@@ -54,6 +54,41 @@ test('rejects workflow expressions in executable and filesystem fields', () => {
   );
 });
 
+test('validates HTTP client probe and send presets', () => {
+  const parsed = endpointsConfigSchema.parse({
+    httpClients: [
+      {
+        id: 'plugin-ic',
+        enabled: true,
+        baseUrl: 'http://127.0.0.1:8765',
+        test: {
+          probePath: '/health',
+          sendMethod: 'POST',
+          sendPath: '/v1/messages',
+        },
+      },
+    ],
+  });
+
+  assert.deepEqual(parsed.httpClients[0].test, {
+    probePath: '/health',
+    sendMethod: 'POST',
+    sendPath: '/v1/messages',
+  });
+  assert.throws(() =>
+    endpointsConfigSchema.parse({
+      httpClients: [
+        {
+          id: 'invalid-test-path',
+          enabled: true,
+          baseUrl: 'http://127.0.0.1:8765',
+          test: {sendPath: 'v1/messages'},
+        },
+      ],
+    }),
+  );
+});
+
 function validConfig() {
   return {
     app: appConfigSchema.parse({

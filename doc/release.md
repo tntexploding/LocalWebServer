@@ -3,7 +3,7 @@
 ## 发布前条件
 
 1. 工作树内容已经过审阅，实际配置、模板、令牌、日志和私有协议文件未被跟踪。
-2. `release.config.json` 指向受支持的 Node.js 24.x，并记录官方归档 SHA-256。
+2. `release.config.json` 记录推荐的源码版本，并为便携包固定 Node.js 24.x 官方归档 SHA-256。
 3. 锁文件只包含预期的注册表来源和依赖版本。
 4. 在联网环境执行完整检查：
 
@@ -52,3 +52,16 @@ Get-Content release/local-automation-server-win-x64.zip.sha256
 发布元数据中的 `sourceDirty` 应为 `false`。若为 `true`，说明发行物来自未提交工作树，
 只能用于本机验收，不应作为正式版本分发。正式发布还应保留对应 Git 提交、ZIP、外部
 摘要和 SBOM。
+
+## 正式版本固化
+
+通过全部检查后，先提交冻结后的源码，再从干净工作树构建并独立验证发行物。确认
+`RELEASE-METADATA.json` 的 `sourceCommit` 指向该提交且 `sourceDirty` 为 `false` 后，创建
+与 `package.json` 一致的带注释标签：
+
+```powershell
+git tag -a v0.1.0 -m "Local Automation Server v0.1.0"
+```
+
+标签不得早于联网依赖审计、完整测试和便携包验证。发布 ZIP、`.sha256` 与 SBOM 应与该标签
+对应保存，但继续保留在 Git 仓库之外。

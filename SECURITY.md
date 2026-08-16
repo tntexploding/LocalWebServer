@@ -12,8 +12,10 @@ API 或未鉴权的业务端点直接暴露到公网。
 
 ## 启动前检查
 
-- 使用 Node.js 24.18.1 至 24.x。便携包固定使用 `release.config.json` 指定并校验的版本。
-- 运行 `npm run secrets:init`，让普通配置仅保存 `${secret:name}` 或 `${env:NAME}` 引用。
+- 推荐使用 Node.js 24.18.1 或更新的 24.x。源码启动仅提示版本偏差；便携包仍固定使用
+  `release.config.json` 指定并校验的版本。
+- 运行 `npm run secrets:init`，让普通配置仅保存 `${secret:name}` 或 `${env:NAME}` 引用；
+  该命令也会迁移端点请求头等敏感字段中的本机内联值。
 - 三个控制令牌至少 32 字符且互不相同；不要继续使用 `replace-*` 一类示例值。
 - 将 `security.allowedApiSources` 与 `network.inbound.allowedSources` 缩小到精确 IP、CIDR 或 `loopback`。
 - 将 `security.corsOrigins` 与 `network.inbound.allowedOrigins` 限制为实际浏览器来源，不使用通配来源。

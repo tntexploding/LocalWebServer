@@ -4,6 +4,7 @@ import {
   ApiSecurity,
   addressMatchesRule,
   assertValidApiSecurityPolicy,
+  withDevelopmentCorsOrigin,
 } from '../dist/apiSecurity.js';
 
 const security = {
@@ -12,7 +13,7 @@ const security = {
   readToken: 'read-token',
   requireTokenForRead: true,
   allowedApiSources: ['loopback', '10.20.0.0/16'],
-  corsOrigins: ['http://127.0.0.1:5277'],
+  corsOrigins: ['http://127.0.0.1:4177'],
   allowedCommandRoots: ['.'],
   allowShell: false,
 };
@@ -43,8 +44,26 @@ test('enforces reader, operator, and administrator permissions', () => {
   assert.equal(policy.isSourceAllowed('10.20.8.9'), true);
   assert.equal(policy.isSourceAllowed('192.168.1.2'), false);
   assert.equal(policy.isOriginAllowed(undefined), true);
-  assert.equal(policy.isOriginAllowed('http://127.0.0.1:5277'), true);
+  assert.equal(policy.isOriginAllowed('http://127.0.0.1:4177'), true);
   assert.equal(policy.isOriginAllowed('https://example.test'), false);
+});
+
+test('adds only an exact loopback development origin without mutating config', () => {
+  const effective = withDevelopmentCorsOrigin(
+    security,
+    'http://127.0.0.1:49152',
+  );
+  assert.notEqual(effective, security);
+  assert.deepEqual(security.corsOrigins, ['http://127.0.0.1:4177']);
+  assert.equal(effective.corsOrigins.includes('http://127.0.0.1:49152'), true);
+  assert.throws(
+    () => withDevelopmentCorsOrigin(security, 'https://example.test'),
+    /exact loopback HTTP origin/u,
+  );
+  assert.throws(
+    () => withDevelopmentCorsOrigin(security, 'http://127.0.0.1:49152/path'),
+    /exact loopback HTTP origin/u,
+  );
 });
 
 test('writes security audit metadata without request content', async () => {
