@@ -2,6 +2,15 @@
   "name": "local-automation-server",
   "version": "0.1.0",
   "private": true,
+  "description": "A local-first HTTP/WebSocket gateway and visual automation server.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tntexploding/LocalWebServer.git"
+  },
+  "homepage": "https://github.com/tntexploding/LocalWebServer#readme",
+  "bugs": {
+    "url": "https://github.com/tntexploding/LocalWebServer/issues"
+  },
   "type": "module",
   "workspaces": [
     "apps/*",

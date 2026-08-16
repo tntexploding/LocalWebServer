@@ -2,6 +2,10 @@
 
 Local Automation Server 是一个本地 HTTP/WebSocket 网关与自动化服务。它负责管理收发端点、将消息标准化为事件、按声明式规则匹配事件，并通过受控队列执行命令、HTTP 发送和 WebSocket 发送动作。
 
+> [!WARNING]
+> 本项目按本地优先的单用户信任模型设计，不应直接暴露到公网。跨主机使用前请先阅读
+> [安全说明](SECURITY.md)，并配置 TLS 终止、访问控制和主机防火墙。
+
 ## 功能概览
 
 - 为不同 IP、端口和路径创建 HTTP/WS 服务端。
@@ -26,10 +30,24 @@ Local Automation Server 是一个本地 HTTP/WebSocket 网关与自动化服务�
 - npm 10 或更高版本。
 - Windows、macOS 或 Linux；命令动作本身可能依赖操作系统。
 
-## 快速开始
+## 获取与运行
+
+### Windows 便携版
+
+从 [Releases](https://github.com/tntexploding/LocalWebServer/releases) 下载
+`local-automation-server-win-x64.zip` 及其 `.sha256` 文件，核对摘要后解压：
 
 ```powershell
-npm install
+Get-FileHash -Algorithm SHA256 .\local-automation-server-win-x64.zip
+```
+
+首次运行执行 `initialize.cmd`，随后使用 `start.cmd` 启动。便携包固定并校验 Node.js
+运行时，且附带 CycloneDX SBOM 与逐文件 SHA-256 清单。
+
+### 从源码运行
+
+```powershell
+npm ci --ignore-scripts
 Copy-Item config/app.example.yaml config/app.yaml
 Copy-Item config/web.example.yaml config/web.yaml
 Copy-Item config/endpoints.example.yaml config/endpoints.yaml
@@ -40,6 +58,10 @@ npm run dev
 ```
 
 已有本机配置时无需覆盖。实际配置和消息模板已被 Git 忽略，详细说明见 [本机配置说明](config/README.md)。
+
+仓库只包含默认禁用且不含真实标识符的 `*.example.yaml`。本机配置、消息模板、媒体、
+令牌、日志、运行数据、测试产物和便携发行物都不会进入 Git；`npm run audit:repo` 会同时
+检查当前文件、忽略边界和 Git 历史。
 
 开发模式会同时启动后端和前端：
 
@@ -142,10 +164,11 @@ tests/             仅通过构建入口和公开协议运行的独立验收测�
 - [安全审计记录](doc/security-audit.md)
 - [发布流程](doc/release.md)
 - [部署说明](doc/deployment.md)
+- [贡献指南](CONTRIBUTING.md)
 
 ## 项目状态
 
-`v0.1.0` 的首次联合测试范围已经冻结。HTTP/WS 收发、持久 WS 客户端、消息模板、
+`v0.1.0` 是首次联合测试发行版。HTTP/WS 收发、持久 WS 客户端、消息模板、
 QQ-AIC 基础消息兼容、消息与可靠时间触发器、参数化可视化工作流、可复用动作库、执行
 队列、节点时间线和 WebUI 已经连通。鼠标控制、进程截图等更敏感的桌面控制能力不属于
 本次发行范围，也不会作为默认功能开放。
