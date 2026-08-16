@@ -2,6 +2,7 @@
   "name": "local-automation-server",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "A local-first HTTP/WebSocket gateway and visual automation server.",
   "repository": {
     "type": "git",

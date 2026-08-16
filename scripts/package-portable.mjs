@@ -62,6 +62,8 @@ for (const source of [
   'doc/workflow_automation.md',
   'scripts/init-secrets.mjs',
   'scripts/windows',
+  'CHANGELOG.md',
+  'LICENSE',
   'README.md',
   'SECURITY.md',
   'release.config.json',
@@ -130,6 +132,7 @@ const portablePackage = {
   name: sourcePackage.name,
   version: sourcePackage.version,
   private: true,
+  license: sourcePackage.license,
   type: 'module',
   scripts: {
     start: 'runtime\\node.exe apps/server/dist/index.js',
