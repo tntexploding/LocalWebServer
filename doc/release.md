@@ -56,7 +56,7 @@ Get-Content release/local-automation-server-win-x64.zip.sha256
 ## 正式版本固化
 
 通过全部检查后，先提交冻结后的源码，再从干净工作树构建并独立验证发行物。确认
-`RELEASE-METADATA.json` 的 `sourceCommit` 指向该提交且 `sourceDirty` 为 `false` 后，创建
+`release-metadata.json` 的 `sourceCommit` 指向该提交且 `sourceDirty` 为 `false` 后，创建
 与 `package.json` 一致的带注释标签：
 
 ```powershell
