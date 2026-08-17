@@ -419,6 +419,14 @@ export const appConfigSchema = z.object({
     }),
     outbound: z.object({
       allowedHostnames: z.array(z.string().min(1)),
+      allowedPrivateHostnames: z
+        .array(
+          z.object({
+            hostname: z.string().min(1),
+            allowedAddresses: z.array(z.string().min(1)).min(1),
+          }),
+        )
+        .default([]),
       allowedAddresses: z.array(z.string().min(1)),
       allowedPorts: z.array(z.number().int().min(1).max(65535)),
       maxHttpRequestBytes: z.number().int().min(1024).max(104857600),

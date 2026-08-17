@@ -65,3 +65,34 @@ git tag -a v0.1.0 -m "Local Automation Server v0.1.0"
 
 标签不得早于联网依赖审计、完整测试和便携包验证。发布 ZIP、`.sha256` 与 SBOM 应与该标签
 对应保存，但继续保留在 Git 仓库之外。
+
+## 容器发布
+
+`.github/workflows/container.yml` 使用相同源码执行三个隔离作业：
+
+1. `quality` 获取完整 Git 历史，安装锁定依赖，运行联网依赖漏洞/签名审计、完整
+   `npm run check` 和独立容器烟雾测试。
+2. PR 的 `validate` 使用 QEMU/Buildx 构建 `linux/amd64` 与 `linux/arm64`，但没有包写权限，
+   也不会推送镜像。
+3. `main`、`v*` 或维护者手动运行的 `publish` 在质量门禁通过后，使用仓库自带的
+   `GITHUB_TOKEN` 推送 GHCR，不需要长期 PAT。
+
+发布标签策略：
+
+| Git 引用        | 容器标签                                        |
+| --------------- | ----------------------------------------------- |
+| `main`          | `edge`、`sha-<提交摘要>`                        |
+| `vX.Y.Z`        | `X.Y.Z`、`X.Y`、`X`、`latest`、`sha-<提交摘要>` |
+| `vX.Y.Z-<预览>` | 完整预发行版本与提交摘要，不移动 `latest`       |
+| 手动运行        | 提交摘要；默认分支同时更新 `edge`               |
+
+任何 `v*` 标签必须严格等于 `v` 加 `package.json` 的版本，否则在登录注册表前失败。正式发布应
+先完成便携包验证和源码提交，再创建标签。不要删除并重建同名版本标签；修复后递增语义化版本。
+
+镜像发布同时生成 BuildKit SPDX SBOM 与 `mode=max` provenance，向 GHCR 写入 GitHub
+artifact attestation，并使用 GitHub Actions OIDC 完成 Sigstore 无密钥签名。第三方 Actions
+全部固定到 40 位提交 SHA；`.github/dependabot.yml` 只负责提出审阅后的升级 PR。
+
+首次工作流成功后，在 GitHub 包设置中确认
+`ghcr.io/tntexploding/localwebserver` 已连接本仓库并设为公开。验证命令与部署方法见
+[Docker 部署指南](docker.md)。

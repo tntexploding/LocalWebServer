@@ -1,0 +1,35 @@
+services:
+  las:
+    build:
+      context: .
+      args:
+        NODE_VERSION: '24.18'
+    image: ${LAS_IMAGE:-local-automation-server:local}
+    init: true
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    stop_grace_period: 20s
+    environment:
+      LAS_ROOT_DIR: /var/lib/las
+    # To reach a service on the Docker host, uncomment this mapping and add the
+    # hostname, resolved address range, and port to app.yaml's outbound policy.
+    # extra_hosts:
+    #   - 'host.docker.internal:host-gateway'
+    ports:
+      - '127.0.0.1:4789:4789'
+      # Publish each additional enabled listener port explicitly.
+      # - '127.0.0.1:7800:7800'
+    volumes:
+      - las-state:/var/lib/las
+      # Mount allowlisted scripts or working directories explicitly.
+      # - './automation:/workspace:ro'
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+
+volumes:
+  las-state:

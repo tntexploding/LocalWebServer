@@ -57,6 +57,59 @@ test('rejects a public hostname that resolves into a restricted network', async 
   );
 });
 
+test('allows a private hostname only inside its scoped address rules', async () => {
+  let resolutions = 0;
+  const policy = new NetworkPolicy(
+    () => ({
+      ...networkConfig(),
+      outbound: {
+        ...networkConfig().outbound,
+        allowedPrivateHostnames: [
+          {
+            hostname: 'host.docker.internal',
+            allowedAddresses: ['172.16.0.0/12'],
+          },
+        ],
+      },
+    }),
+    async () => {
+      resolutions += 1;
+      return [{address: '172.17.0.1', family: 4}];
+    },
+  );
+
+  await policy.assertConfiguredHttpUrl('http://host.docker.internal:4789/path');
+  assert.equal(resolutions, 0);
+  await policy.assertHttpUrl('http://host.docker.internal:4789/path');
+  assert.equal(resolutions, 1);
+});
+
+test('rejects any private hostname address outside its scoped rules', async () => {
+  const policy = new NetworkPolicy(
+    () => ({
+      ...networkConfig(),
+      outbound: {
+        ...networkConfig().outbound,
+        allowedPrivateHostnames: [
+          {
+            hostname: 'private-service',
+            allowedAddresses: ['172.16.0.0/12'],
+          },
+        ],
+      },
+    }),
+    async () => [
+      {address: '172.17.0.8', family: 4},
+      {address: '203.0.113.8', family: 4},
+    ],
+  );
+
+  await assert.rejects(
+    policy.assertHttpUrl('http://private-service:4789/path'),
+    /outside its address allowlist/u,
+  );
+});
+
 test('validates configured hostnames without requiring DNS connectivity', async () => {
   let resolutions = 0;
   const policy = new NetworkPolicy(
@@ -135,6 +188,72 @@ test('rejects malformed network policy entries', () => {
       }),
     /Invalid outbound hostname/u,
   );
+  assert.throws(
+    () =>
+      assertValidNetworkPolicy({
+        ...networkConfig(),
+        outbound: {
+          ...networkConfig().outbound,
+          allowedPrivateHostnames: [
+            {
+              hostname: 'private-service',
+              allowedAddresses: ['not-an-address'],
+            },
+          ],
+        },
+      }),
+    /Invalid network address rule/u,
+  );
+  assert.throws(
+    () =>
+      assertValidNetworkPolicy({
+        ...networkConfig(),
+        outbound: {
+          ...networkConfig().outbound,
+          allowedHostnames: ['private-service'],
+          allowedPrivateHostnames: [
+            {
+              hostname: 'private-service',
+              allowedAddresses: ['172.16.0.0/12'],
+            },
+          ],
+        },
+      }),
+    /public and private policies together/u,
+  );
+  assert.throws(
+    () =>
+      assertValidNetworkPolicy({
+        ...networkConfig(),
+        outbound: {
+          ...networkConfig().outbound,
+          allowedPrivateHostnames: [
+            {hostname: 'private-service', allowedAddresses: []},
+          ],
+        },
+      }),
+    /requires at least one address rule/u,
+  );
+  assert.throws(
+    () =>
+      assertValidNetworkPolicy({
+        ...networkConfig(),
+        outbound: {
+          ...networkConfig().outbound,
+          allowedPrivateHostnames: [
+            {
+              hostname: 'private-service',
+              allowedAddresses: ['172.16.0.0/12'],
+            },
+            {
+              hostname: 'private-service',
+              allowedAddresses: ['192.168.0.0/16'],
+            },
+          ],
+        },
+      }),
+    /Duplicate private outbound hostname policy/u,
+  );
 });
 
 function networkConfig() {
@@ -152,6 +271,7 @@ function networkConfig() {
     },
     outbound: {
       allowedHostnames: ['localhost'],
+      allowedPrivateHostnames: [],
       allowedAddresses: ['loopback'],
       allowedPorts: [4789],
       maxHttpRequestBytes: 8,

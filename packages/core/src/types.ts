@@ -451,6 +451,10 @@ export interface AppConfig {
     };
     outbound: {
       allowedHostnames: string[];
+      allowedPrivateHostnames: Array<{
+        hostname: string;
+        allowedAddresses: string[];
+      }>;
       allowedAddresses: string[];
       allowedPorts: number[];
       maxHttpRequestBytes: number;

@@ -42,9 +42,12 @@
     "startup:install": "npm run runtime:check && npm run build && powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/install-startup.ps1",
     "startup:status": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/status-startup.ps1",
     "startup:uninstall": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/uninstall-startup.ps1",
-    "test": "npm run test:unit && npm run test:e2e",
+    "test": "npm run test:unit && npm run test:container:unit && npm run test:e2e",
     "test:all": "npm run test && npm run test:browser",
     "test:browser": "npm run build && playwright test",
+    "test:container": "node scripts/verify-container.mjs",
+    "test:container:platforms": "node scripts/verify-container-platforms.mjs",
+    "test:container:unit": "node --test tests/container/*.test.mjs",
     "test:e2e": "npm run build && node --test --test-concurrency=1 tests/e2e/*.test.mjs",
     "test:unit": "npm run test --workspaces --if-present"
   },

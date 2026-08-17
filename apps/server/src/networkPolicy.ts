@@ -142,7 +142,11 @@ export class NetworkPolicy {
       }
       return parsed;
     }
-    if (!config.allowedHostnames.includes(hostname.toLowerCase())) {
+    const normalized = hostname.toLowerCase();
+    const privatePolicy = privateHostnamePolicies(config).find(
+      entry => entry.hostname === normalized,
+    );
+    if (!config.allowedHostnames.includes(normalized) && !privatePolicy) {
       throw new NetworkPolicyError(
         `Outbound hostname is not allowlisted: ${hostname}`,
       );
@@ -162,6 +166,20 @@ export class NetworkPolicy {
       }
       return parsed;
     }
+    if (privatePolicy) {
+      const outsideAllowlist = addresses.find(
+        item =>
+          !privatePolicy.allowedAddresses.some(rule =>
+            addressMatchesRule(item.address, rule),
+          ),
+      );
+      if (outsideAllowlist) {
+        throw new NetworkPolicyError(
+          `Private outbound hostname resolved outside its address allowlist: ${outsideAllowlist.address}`,
+        );
+      }
+      return parsed;
+    }
     const restricted = addresses.find(item =>
       isRestrictedAddress(item.address),
     );
@@ -176,35 +194,39 @@ export class NetworkPolicy {
 
 /** Validates configured network rules before listeners or clients are changed. */
 export function assertValidNetworkPolicy(network: NetworkConfig): void {
+  const privatePolicies = privateHostnamePolicies(network.outbound);
   for (const rule of [
     ...network.inbound.allowedSources,
     ...network.outbound.allowedAddresses,
+    ...privatePolicies.flatMap(policy => policy.allowedAddresses),
   ]) {
     if (!isAddressRule(rule)) {
       throw new NetworkPolicyError(`Invalid network address rule: ${rule}`);
     }
   }
   for (const hostname of network.outbound.allowedHostnames) {
-    if (
-      hostname !== hostname.toLowerCase() ||
-      hostname.includes('*') ||
-      hostname.includes('/') ||
-      hostname.includes(':') ||
-      hostname.trim() !== hostname
-    ) {
+    assertExactHostname(hostname);
+  }
+  const publicHostnames = new Set(network.outbound.allowedHostnames);
+  const privateHostnames = new Set<string>();
+  for (const policy of privatePolicies) {
+    assertExactHostname(policy.hostname);
+    if (policy.allowedAddresses.length === 0) {
       throw new NetworkPolicyError(
-        `Outbound hostname must be an exact lowercase DNS name: ${hostname}`,
+        `Private outbound hostname requires at least one address rule: ${policy.hostname}`,
       );
     }
-    let parsed: URL;
-    try {
-      parsed = new URL(`http://${hostname}`);
-    } catch {
-      throw new NetworkPolicyError(`Invalid outbound hostname: ${hostname}`);
+    if (publicHostnames.has(policy.hostname)) {
+      throw new NetworkPolicyError(
+        `Outbound hostname cannot use public and private policies together: ${policy.hostname}`,
+      );
     }
-    if (parsed.hostname !== hostname) {
-      throw new NetworkPolicyError(`Invalid outbound hostname: ${hostname}`);
+    if (privateHostnames.has(policy.hostname)) {
+      throw new NetworkPolicyError(
+        `Duplicate private outbound hostname policy: ${policy.hostname}`,
+      );
     }
+    privateHostnames.add(policy.hostname);
   }
   if (network.inbound.headersTimeoutMs > network.inbound.requestTimeoutMs) {
     throw new NetworkPolicyError(
@@ -267,6 +289,33 @@ function normalizedHostname(url: URL): string {
   return url.hostname.startsWith('[') && url.hostname.endsWith(']')
     ? url.hostname.slice(1, -1)
     : url.hostname;
+}
+
+function privateHostnamePolicies(config: OutboundConfig) {
+  return config.allowedPrivateHostnames ?? [];
+}
+
+function assertExactHostname(hostname: string): void {
+  if (
+    hostname !== hostname.toLowerCase() ||
+    hostname.includes('*') ||
+    hostname.includes('/') ||
+    hostname.includes(':') ||
+    hostname.trim() !== hostname
+  ) {
+    throw new NetworkPolicyError(
+      `Outbound hostname must be an exact lowercase DNS name: ${hostname}`,
+    );
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(`http://${hostname}`);
+  } catch {
+    throw new NetworkPolicyError(`Invalid outbound hostname: ${hostname}`);
+  }
+  if (parsed.hostname !== hostname) {
+    throw new NetworkPolicyError(`Invalid outbound hostname: ${hostname}`);
+  }
 }
 
 function isAllowedAddress(address: string, config: OutboundConfig): boolean {

@@ -1,6 +1,9 @@
-# Windows 部署
+# 部署
 
-## 运行环境
+Docker 容器化基线、数据卷和端口映射见 [Docker 部署指南](docker.md)。本页其余部分说明
+Windows 源码、登录启动和便携发行方式。
+
+## Windows 运行环境
 
 源码部署推荐 Node.js 24.18.1 或更新的 24.x。`npm run runtime:check` 和后端正式入口都会
 读取 `release.config.json`；版本偏差只产生兼容性提示，不会阻止启动。建议使用锁文件安装：

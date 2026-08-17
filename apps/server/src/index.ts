@@ -40,6 +40,7 @@ import {EndpointListenerManager} from './endpointListenerManager.js';
 import {EndpointTester} from './endpointTester.js';
 import {EventProcessor, makeEvent} from './eventProcessor.js';
 import {EventWaitBroker} from './eventWaitBroker.js';
+import {installGracefulShutdown} from './gracefulShutdown.js';
 import {InteractionBroker} from './interactionBroker.js';
 import {MessageTemplateDecoder} from './messageTemplateDecoder.js';
 import {
@@ -335,6 +336,7 @@ await workflowScheduler.initialize(config.rules);
 
 app.addHook('onClose', async () => {
   workflowScheduler.stop();
+  await endpointListeners.clear();
 });
 
 await applyEndpointServers();
@@ -949,3 +951,4 @@ await app.listen({
   host: config.app.server.host,
   port: config.app.server.port,
 });
+installGracefulShutdown(app);

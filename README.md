@@ -82,6 +82,38 @@ npm start
 
 随后打开 `http://127.0.0.1:4789/ui/`。
 
+### Docker 容器
+
+仓库已提供安全收敛的容器化基线，可在安装 Docker Compose 的环境中构建并运行：
+
+```sh
+docker compose up --build -d
+docker compose ps
+```
+
+随后打开 `http://127.0.0.1:4789/ui/`。首次启动会在命名数据卷中复制默认禁用的脱敏
+配置并随机生成三种角色令牌；已有配置不会被覆盖。查看本机管理员令牌可执行：
+
+```sh
+docker compose exec las cat /var/lib/las/config/secrets.yaml
+```
+
+Compose 默认只把控制端口发布到宿主机回环地址，并以非 root 用户、只读根文件系统和移除
+Linux capabilities 的方式运行。额外 HTTP/WS 监听端口必须逐项发布；容器中的命令动作也
+只会操作容器及显式挂载的目录。HTTP/WS 客户端可通过“精确服务名 + 解析地址/CIDR +
+端口”三项白名单访问 Compose 服务或宿主网关。完整网络、数据卷和安全说明见
+[Docker 部署指南](doc/docker.md)。
+
+GitHub Actions 会在 `main` 和版本标签通过质量门禁后发布 `linux/amd64`、`linux/arm64`
+镜像到 `ghcr.io/tntexploding/localwebserver`。使用已发布镜像时可设置 `LAS_IMAGE`，先拉取
+再禁止 Compose 本地构建：
+
+```sh
+export LAS_IMAGE=ghcr.io/tntexploding/localwebserver:edge
+docker compose pull las
+docker compose up --no-build -d
+```
+
 ## 基本使用
 
 1. 在“端点”页面创建 HTTP/WS 服务端或客户端。
@@ -119,25 +151,27 @@ x-las-token: <your-local-admin-operator-or-read-token>
 
 ## 常用命令
 
-| 命令                         | 作用                                                                    |
-| ---------------------------- | ----------------------------------------------------------------------- |
-| `npm run dev`                | 同时启动后端和 Vite WebUI。                                             |
-| `npm start`                  | 构建并启动后端托管版本。                                                |
-| `npm run secrets:init`       | 生成或迁移本机令牌到独立密钥文件。                                      |
-| `npm run config:normalize`   | 从脱敏模板补齐旧版 `app.yaml` 的缺失字段。                              |
-| `npm run check`              | 检查格式、风格、类型、构建并运行全部测试。                              |
-| `npm run audit:repo`         | 检查当前文件及 Git 历史中的配置、凭据模式和运行时硬编码地址。           |
-| `npm run audit:lock`         | 离线检查生产依赖来源、完整性、许可证和安装脚本。                        |
-| `npm run audit:dependencies` | 向 npm 查询漏洞并验证依赖签名和来源证明。                               |
-| `npm run test:unit`          | 运行包级单元和组件测试。                                                |
-| `npm run test:e2e`           | 通过构建入口和公共协议运行独立进程测试。                                |
-| `npm run test:browser`       | 使用 Chrome 验证生产 WebUI 交互。                                       |
-| `npm run package:portable`   | 使用固定且校验过的 Node.js 生成带 SBOM、清单和校验和的 Windows 便携包。 |
-| `npm run package:verify`     | 重新验证便携目录、运行时、逐文件清单和压缩包摘要。                      |
-| `npm run startup:install`    | 为当前 Windows 用户安装登录启动任务。                                   |
-| `npm run startup:status`     | 查询登录启动任务状态。                                                  |
-| `npm run startup:uninstall`  | 删除登录启动任务。                                                      |
-| `npm run clean`              | 删除构建产物、增量缓存和开发日志。                                      |
+| 命令                               | 作用                                                                    |
+| ---------------------------------- | ----------------------------------------------------------------------- |
+| `npm run dev`                      | 同时启动后端和 Vite WebUI。                                             |
+| `npm start`                        | 构建并启动后端托管版本。                                                |
+| `npm run secrets:init`             | 生成或迁移本机令牌到独立密钥文件。                                      |
+| `npm run config:normalize`         | 从脱敏模板补齐旧版 `app.yaml` 的缺失字段。                              |
+| `npm run check`                    | 检查格式、风格、类型、构建并运行全部测试。                              |
+| `npm run audit:repo`               | 检查当前文件及 Git 历史中的配置、凭据模式和运行时硬编码地址。           |
+| `npm run audit:lock`               | 离线检查生产依赖来源、完整性、许可证和安装脚本。                        |
+| `npm run audit:dependencies`       | 向 npm 查询漏洞并验证依赖签名和来源证明。                               |
+| `npm run test:unit`                | 运行包级单元和组件测试。                                                |
+| `npm run test:e2e`                 | 通过构建入口和公共协议运行独立进程测试。                                |
+| `npm run test:browser`             | 使用 Chrome 验证生产 WebUI 交互。                                       |
+| `npm run test:container`           | 构建隔离镜像并验证安全运行、持久化及受控的容器间 HTTP 访问。            |
+| `npm run test:container:platforms` | 使用临时 Buildx builder 验证 amd64/arm64 构建，不推送镜像。             |
+| `npm run package:portable`         | 使用固定且校验过的 Node.js 生成带 SBOM、清单和校验和的 Windows 便携包。 |
+| `npm run package:verify`           | 重新验证便携目录、运行时、逐文件清单和压缩包摘要。                      |
+| `npm run startup:install`          | 为当前 Windows 用户安装登录启动任务。                                   |
+| `npm run startup:status`           | 查询登录启动任务状态。                                                  |
+| `npm run startup:uninstall`        | 删除登录启动任务。                                                      |
+| `npm run clean`                    | 删除构建产物、增量缓存和开发日志。                                      |
 
 ## 工程结构
 
@@ -149,7 +183,7 @@ packages/storage/  YAML 配置与 JSONL 日志存储
 config/            本机运行配置与消息模板
 doc/               架构、配置、开发和通信协议文档
 scripts/           跨平台开发启动与清理脚本
-tests/             仅通过构建入口和公开协议运行的独立验收测试
+tests/             仅通过构建入口和公开协议运行的独立验收与容器测试
 ```
 
 更多信息：
@@ -164,11 +198,12 @@ tests/             仅通过构建入口和公开协议运行的独立验收测�
 - [安全审计记录](doc/security-audit.md)
 - [发布流程](doc/release.md)
 - [部署说明](doc/deployment.md)
+- [Docker 部署指南](doc/docker.md)
 - [贡献指南](CONTRIBUTING.md)
 
 ## 项目状态
 
-`v0.1.0` 是首次联合测试发行版。HTTP/WS 收发、持久 WS 客户端、消息模板、
+`v0.1.0` 是首次联合测试发行版。主分支已进入 S4 容器发布阶段。HTTP/WS 收发、持久 WS 客户端、消息模板、
 QQ-AIC 基础消息兼容、消息与可靠时间触发器、参数化可视化工作流、可复用动作库、执行
 队列、节点时间线和 WebUI 已经连通。鼠标控制、进程截图等更敏感的桌面控制能力不属于
 本次发行范围，也不会作为默认功能开放。

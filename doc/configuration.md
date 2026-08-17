@@ -59,6 +59,7 @@ network:
     maxHeadersCount: 100
   outbound:
     allowedHostnames: [localhost]
+    allowedPrivateHostnames: []
     allowedAddresses: [127.0.0.1, '::1']
     allowedPorts: [4789, 7800, 8765]
     maxHttpRequestBytes: 1048576
@@ -67,7 +68,26 @@ network:
 ```
 
 地址项接受精确 IP、CIDR 或 `loopback`；主机名必须是无通配符的小写精确名称。外发 URL
-还必须匹配允许端口。公共主机解析到私网、回环、链路本地或保留地址时会被拒绝。
+还必须匹配允许端口。`allowedHostnames` 用于公共域名和 `localhost`，公共域名解析到私网、
+回环、链路本地或保留地址时会被拒绝。
+
+需要访问 Docker Compose 服务名、`host.docker.internal` 或可信局域网 DNS 名称时，应使用
+主机名与解析地址双重白名单：
+
+```yaml
+outbound:
+  allowedPrivateHostnames:
+    - hostname: host.docker.internal
+      allowedAddresses:
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+  allowedPorts: [4789, 7800, 8765]
+```
+
+每个条目只授权一个精确主机名及其可解析到的 IP/CIDR；一次 DNS 查询返回的所有地址都
+必须落在该条目的 `allowedAddresses` 中。不要填写整个私网范围，除非目标确实可能使用该
+范围；优先使用 Docker 网络子网或宿主网关的精确地址。静态配置保存只检查结构，真正发送
+HTTP/WS 时才解析并验证 DNS。
 
 ```yaml
 storage:

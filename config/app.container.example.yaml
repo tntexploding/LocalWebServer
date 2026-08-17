@@ -1,0 +1,73 @@
+version: 1
+
+server:
+  host: '0.0.0.0'
+  port: 4789
+  webSocketPath: '/ws'
+
+security:
+  apiToken: '${secret:apiToken}'
+  operatorToken: '${secret:operatorToken}'
+  readToken: '${secret:readToken}'
+  requireTokenForRead: true
+  allowedApiSources:
+    - '127.0.0.1'
+    - '::1'
+    - '10.0.0.0/8'
+    - '172.16.0.0/12'
+    - '192.168.0.0/16'
+  corsOrigins:
+    - 'http://127.0.0.1:4789'
+    - 'http://localhost:4789'
+  allowedCommandRoots: []
+  allowedExecutables: []
+  commandEnvironmentAllowlist:
+    - 'PATH'
+    - 'TEMP'
+    - 'TMP'
+    - 'TMPDIR'
+  allowShell: false
+
+network:
+  inbound:
+    allowedSources:
+      - '127.0.0.1'
+      - '::1'
+      - '10.0.0.0/8'
+      - '172.16.0.0/12'
+      - '192.168.0.0/16'
+    allowedOrigins: []
+    maxHttpBodyBytes: 1048576
+    maxWebSocketMessageBytes: 1048576
+    maxWebSocketConnectionsPerEndpoint: 16
+    requestTimeoutMs: 15000
+    headersTimeoutMs: 10000
+    keepAliveTimeoutMs: 5000
+    maxHeadersCount: 100
+  outbound:
+    allowedHostnames:
+      - 'localhost'
+    allowedPrivateHostnames: []
+    allowedAddresses:
+      - 'loopback'
+    allowedPorts:
+      - 4789
+      - 7800
+      - 8765
+    maxHttpRequestBytes: 1048576
+    maxHttpResponseBytes: 1048576
+    maxWebSocketMessageBytes: 1048576
+
+automation:
+  maxConcurrentActions: 2
+  maxActionOutputBytes: 1048576
+
+storage:
+  eventLogPath: 'data/events.jsonl'
+  runLogPath: 'data/runs.jsonl'
+  auditLogPath: 'data/security-audit.jsonl'
+  schedulerStatePath: 'data/scheduler-state.json'
+  configHistoryPath: 'data/config-history'
+  configHistoryLimit: 30
+  maxLogBytes: 10485760
+  maxLogFiles: 5

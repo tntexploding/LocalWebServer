@@ -22,6 +22,17 @@ const REQUIRED_IGNORES = [
   'release/application.zip',
   'tests/.artifacts/report.json',
 ];
+const REQUIRED_DOCKER_IGNORE_RULES = [
+  '.env',
+  '.npmrc',
+  '**/node_modules/',
+  '**/dist/',
+  'config/**',
+  'custom/',
+  'data/',
+  'doc/template/',
+  'release/',
+];
 const SECRET_PATTERNS = [
   ['private key', /-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----/u],
   ['AWS access key', /\bAKIA[0-9A-Z]{16}\b/u],
@@ -119,7 +130,21 @@ for (const probe of REQUIRED_IGNORES) {
   }
 }
 
+const dockerIgnoreRules = new Set(
+  (await readRequired('.dockerignore'))
+    .split(/\r?\n/u)
+    .map(line => line.trim())
+    .filter(line => line && !line.startsWith('#')),
+);
+for (const rule of REQUIRED_DOCKER_IGNORE_RULES) {
+  if (!dockerIgnoreRules.has(rule)) {
+    violations.push(`Required Docker ignore rule is missing: ${rule}`);
+  }
+}
+
 await auditExamples();
+await auditWorkflows();
+await auditContainerDefinition();
 
 if (violations.length > 0) {
   console.error('Repository audit failed:');
@@ -168,6 +193,144 @@ async function auditExamples() {
   }
   if ((rules?.rules ?? []).some(rule => rule.enabled !== false)) {
     violations.push('Every example automation must be disabled by default.');
+  }
+}
+
+async function auditWorkflows() {
+  const workflowPaths = repositoryFiles.filter(relativePath =>
+    /^\.github\/workflows\/.*\.ya?ml$/u.test(relativePath),
+  );
+  if (!workflowPaths.includes('.github/workflows/container.yml')) {
+    violations.push('Container publishing workflow is missing.');
+    return;
+  }
+
+  for (const relativePath of workflowPaths) {
+    const content = await readRequired(relativePath);
+    if (/^\s*pull_request_target\s*:/mu.test(content)) {
+      violations.push(
+        `Privileged pull_request_target trigger is not allowed: ${relativePath}`,
+      );
+    }
+    for (const match of content.matchAll(/^\s*uses:\s*([^\s#]+)/gmu)) {
+      const reference = match[1];
+      if (reference.startsWith('./')) continue;
+      if (!/^[^@\s]+@[0-9a-f]{40}$/u.test(reference)) {
+        violations.push(
+          `External action must use an immutable commit SHA in ${relativePath}: ${reference}`,
+        );
+      }
+    }
+  }
+
+  const workflow = YAML.parse(
+    await readRequired('.github/workflows/container.yml'),
+  );
+  const quality = workflow?.jobs?.quality;
+  const validation = workflow?.jobs?.validate;
+  const publication = workflow?.jobs?.publish;
+  if (!hasRunStep(quality, 'npm run check')) {
+    violations.push('Container workflow must run the complete quality gate.');
+  }
+  if (!hasRunStep(quality, 'npm run audit:dependencies')) {
+    violations.push(
+      'Container workflow must audit dependency vulnerabilities and signatures.',
+    );
+  }
+  if (!hasRunStep(quality, 'npm run test:container')) {
+    violations.push(
+      'Container workflow must run the isolated image smoke test.',
+    );
+  }
+  const qualityCheckout = actionStep(quality, 'actions/checkout@');
+  if (qualityCheckout?.with?.['fetch-depth'] !== 0) {
+    violations.push(
+      'Container quality gate must fetch complete Git history for repository auditing.',
+    );
+  }
+  if (validation?.permissions?.contents !== 'read') {
+    violations.push(
+      'Container validation job must use read-only contents access.',
+    );
+  }
+  if (
+    validation?.permissions?.packages ||
+    validation?.permissions?.['id-token'] ||
+    validation?.permissions?.attestations
+  ) {
+    violations.push(
+      'Container validation job must not receive publish access.',
+    );
+  }
+  const validationBuild = actionStep(validation, 'docker/build-push-action@');
+  if (
+    validationBuild?.with?.platforms !== 'linux/amd64,linux/arm64' ||
+    validationBuild?.with?.push !== false
+  ) {
+    violations.push(
+      'Container validation must build amd64 and arm64 without pushing.',
+    );
+  }
+  if (
+    publication?.permissions?.contents !== 'read' ||
+    publication?.permissions?.packages !== 'write' ||
+    publication?.permissions?.['id-token'] !== 'write' ||
+    publication?.permissions?.attestations !== 'write'
+  ) {
+    violations.push('Container publication permissions are incomplete.');
+  }
+  const publicationBuild = actionStep(publication, 'docker/build-push-action@');
+  if (
+    publicationBuild?.with?.platforms !== 'linux/amd64,linux/arm64' ||
+    publicationBuild?.with?.push !== true ||
+    publicationBuild?.with?.provenance !== 'mode=max' ||
+    publicationBuild?.with?.sbom !== true
+  ) {
+    violations.push(
+      'Published containers require two platforms, SBOM, and max provenance.',
+    );
+  }
+  if (!actionStep(publication, 'actions/attest@')) {
+    violations.push('Published containers require a GitHub attestation.');
+  }
+  if (!actionStep(publication, 'sigstore/cosign-installer@')) {
+    violations.push('Published containers require keyless signing.');
+  }
+}
+
+function actionStep(job, prefix) {
+  return job?.steps?.find(
+    step => typeof step?.uses === 'string' && step.uses.startsWith(prefix),
+  );
+}
+
+function hasRunStep(job, command) {
+  return job?.steps?.some(
+    step => typeof step?.run === 'string' && step.run.includes(command),
+  );
+}
+
+async function auditContainerDefinition() {
+  const release = JSON.parse(await readRequired('release.config.json'));
+  const dockerfile = await readRequired('Dockerfile');
+  const digest = release?.container?.baseImageDigest;
+  if (!/^sha256:[0-9a-f]{64}$/u.test(digest ?? '')) {
+    violations.push('Container base image digest is missing or invalid.');
+  } else if (!dockerfile.includes(`ARG NODE_IMAGE_DIGEST=${digest}`)) {
+    violations.push(
+      'Dockerfile base image digest differs from release policy.',
+    );
+  }
+  if (release?.container?.baseImage !== 'node:24.18-bookworm-slim') {
+    violations.push(
+      'Container base image does not match the reviewed Node image.',
+    );
+  }
+  if (
+    JSON.stringify(release?.container?.platforms) !==
+    JSON.stringify(['linux/amd64', 'linux/arm64'])
+  ) {
+    violations.push('Container release platforms differ from release policy.');
   }
 }
 

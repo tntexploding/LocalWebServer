@@ -46,6 +46,7 @@ network:
   outbound:
     allowedHostnames:
       - 'localhost'
+    allowedPrivateHostnames: []
     allowedAddresses:
       - 'loopback'
     allowedPorts:
