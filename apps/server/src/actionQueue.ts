@@ -20,6 +20,8 @@ type RunningItem = QueueItem & {
   controller: AbortController;
 };
 
+const RECENT_RUN_LIMIT = 50;
+
 /** Limits concurrent action execution and persists lifecycle transitions. */
 export class ActionQueue {
   private readonly queued: QueueItem[] = [];
@@ -108,7 +110,7 @@ export class ActionQueue {
       event: input.event,
       context: input.context,
     });
-    this.recent.set(run.id, run);
+    this.remember(run);
     return run;
   }
 
@@ -122,7 +124,7 @@ export class ActionQueue {
         error: 'Cancelled before execution.',
       });
       const visible = this.sanitizeResult(cancelled);
-      this.recent.set(runId, visible);
+      this.remember(visible);
       await this.persistRun(cancelled);
       this.resolveWaiter(cancelled);
       return visible;
@@ -131,7 +133,7 @@ export class ActionQueue {
     const running = this.running.get(runId);
     if (running) {
       running.controller.abort('Cancelled by user.');
-      return this.recent.get(runId);
+      return this.recent.get(runId) ?? running.run;
     }
 
     return this.recent.get(runId);
@@ -153,7 +155,7 @@ export class ActionQueue {
       maxConcurrent: this.maxConcurrent,
       queued: this.queued.map(item => item.run),
       running: [...this.running.values()].map(item => item.run),
-      recent: [...this.recent.values()].slice(-50).reverse(),
+      recent: [...this.recent.values()].reverse(),
     };
   }
 
@@ -172,7 +174,7 @@ export class ActionQueue {
       };
       const running: RunningItem = {...item, run: runningRun, controller};
       this.running.set(item.run.id, running);
-      this.recent.set(item.run.id, runningRun);
+      this.remember(runningRun);
       void this.execute(running);
     }
   }
@@ -206,7 +208,7 @@ export class ActionQueue {
       startedAt: item.run.startedAt ?? result.startedAt,
     });
     this.running.delete(item.run.id);
-    this.recent.set(item.run.id, this.sanitizeResult(finished));
+    this.remember(this.sanitizeResult(finished));
     await this.persistRun(finished);
     this.resolveWaiter(finished);
     await this.drain();
@@ -227,6 +229,16 @@ export class ActionQueue {
   private resolveWaiter(result: ActionResult): void {
     this.waiters.get(result.id)?.(result);
     this.waiters.delete(result.id);
+  }
+
+  private remember(result: ActionResult): void {
+    this.recent.delete(result.id);
+    this.recent.set(result.id, result);
+    while (this.recent.size > RECENT_RUN_LIMIT) {
+      const oldest = this.recent.keys().next().value as string | undefined;
+      if (!oldest) return;
+      this.recent.delete(oldest);
+    }
   }
 }
 

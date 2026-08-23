@@ -311,6 +311,7 @@ type ActionViewMode = 'graph' | 'config';
 type LogViewMode = 'entries' | 'console';
 type ApiFailureKind = 'network' | 'auth' | 'http' | 'parse' | 'unknown';
 type ApiConnectionState = 'online' | 'restricted' | 'offline';
+type RefreshMode = 'full' | 'runtime';
 interface ApiFailure {
   id: string;
   label: string;
@@ -325,6 +326,7 @@ type ApiResult<T> =
 
 const API_BASE = resolveApiBase();
 const AUTO_REFRESH_INTERVAL_MS = 5000;
+const API_REQUEST_TIMEOUT_MS = 15_000;
 
 function resolveApiBase(): string {
   const configured = import.meta.env.VITE_API_BASE?.trim();
@@ -367,9 +369,15 @@ async function fetchJson<T>(
   token?: string,
 ): Promise<ApiResult<T>> {
   const url = `${API_BASE}${path}`;
+  const controller = new AbortController();
+  const timeout = window.setTimeout(
+    () => controller.abort(),
+    API_REQUEST_TIMEOUT_MS,
+  );
   try {
     const response = await fetch(url, {
       headers: token ? {'x-las-token': token} : undefined,
+      signal: controller.signal,
     });
     if (!response.ok) {
       return {
@@ -412,10 +420,17 @@ async function fetchJson<T>(
         id,
         label,
         url,
-        kind: error instanceof TypeError ? 'network' : 'unknown',
-        reason: errorMessage(error),
+        kind:
+          controller.signal.aborted || error instanceof TypeError
+            ? 'network'
+            : 'unknown',
+        reason: controller.signal.aborted
+          ? `Request timed out after ${API_REQUEST_TIMEOUT_MS} ms.`
+          : errorMessage(error),
       },
     };
+  } finally {
+    window.clearTimeout(timeout);
   }
 }
 
@@ -527,85 +542,140 @@ function App() {
     [],
   );
   const [status, setStatus] = React.useState(t('status.ready'));
-  const refreshRequestId = React.useRef(0);
+  const apiFailuresRef = React.useRef<ApiFailure[]>([]);
+  const refreshInFlight = React.useRef<Promise<void> | null>(null);
 
-  const refresh = React.useCallback(async () => {
-    const requestId = ++refreshRequestId.current;
-    const rawRequest = token.trim()
-      ? fetchJson<RawConfig>(
-          'raw',
-          'GET /api/config/raw',
-          '/api/config/raw',
+  const performRefresh = React.useCallback(
+    async (mode: RefreshMode) => {
+      const requests: Array<Promise<ApiResult<unknown>>> = [
+        fetchJson<Health>('health', 'GET /api/health', '/api/health', token),
+        fetchJson<EventRow[]>(
+          'events',
+          'GET /api/events',
+          '/api/events?limit=80',
           token,
+        ),
+        fetchJson<RunRow[]>(
+          'runs',
+          'GET /api/runs',
+          '/api/runs?limit=80',
+          token,
+        ),
+        fetchJson<QueueSnapshot>(
+          'queue',
+          'GET /api/queue',
+          '/api/queue',
+          token,
+        ),
+        fetchJson<UserInteraction[]>(
+          'interactions',
+          'GET /api/interactions',
+          '/api/interactions',
+          token,
+        ),
+      ];
+
+      if (mode === 'full') {
+        requests.push(
+          fetchJson<AppConfig>(
+            'config',
+            'GET /api/config',
+            '/api/config',
+            token,
+          ),
+          token.trim()
+            ? fetchJson<RawConfig>(
+                'raw',
+                'GET /api/config/raw',
+                '/api/config/raw',
+                token,
+              )
+            : Promise.resolve<ApiResult<RawConfig | null>>({
+                ok: true,
+                id: 'raw',
+                value: null,
+              }),
+          fetchJson<MessageTemplateSummary[]>(
+            'templates',
+            'GET /api/templates',
+            '/api/templates',
+            token,
+          ),
+        );
+      }
+
+      const results = await Promise.all(requests);
+      const failures = results
+        .filter(
+          (result): result is Extract<(typeof results)[number], {ok: false}> =>
+            !result.ok,
         )
-      : Promise.resolve<ApiResult<RawConfig | null>>({
-          ok: true,
-          id: 'raw',
-          value: null,
-        });
-    const results = await Promise.all([
-      fetchJson<Health>('health', 'GET /api/health', '/api/health', token),
-      fetchJson<AppConfig>('config', 'GET /api/config', '/api/config', token),
-      rawRequest,
-      fetchJson<MessageTemplateSummary[]>(
-        'templates',
-        'GET /api/templates',
-        '/api/templates',
-        token,
-      ),
-      fetchJson<EventRow[]>(
-        'events',
-        'GET /api/events',
-        '/api/events?limit=80',
-        token,
-      ),
-      fetchJson<RunRow[]>('runs', 'GET /api/runs', '/api/runs?limit=80', token),
-      fetchJson<QueueSnapshot>('queue', 'GET /api/queue', '/api/queue', token),
-      fetchJson<UserInteraction[]>(
-        'interactions',
-        'GET /api/interactions',
-        '/api/interactions',
-        token,
-      ),
-    ]);
+        .map(result => result.failure);
+      const requestedIds = new Set(results.map(result => result.id));
+      const nextFailures = [
+        ...apiFailuresRef.current.filter(
+          failure => !requestedIds.has(failure.id),
+        ),
+        ...failures,
+      ];
+      apiFailuresRef.current = nextFailures;
+      setApiFailures(nextFailures);
 
-    if (requestId !== refreshRequestId.current) return;
-
-    const failures = results
-      .filter(
-        (result): result is Extract<typeof result, {ok: false}> => !result.ok,
-      )
-      .map(result => result.failure);
-    setApiFailures(failures);
-
-    for (const result of results) {
-      if (!result.ok) {
-        continue;
+      for (const result of results) {
+        if (!result.ok) continue;
+        if (result.id === 'health') setHealth(result.value as Health);
+        if (result.id === 'config') setConfig(result.value as AppConfig);
+        if (result.id === 'raw' && result.value !== null) {
+          setRaw(result.value as RawConfig);
+        }
+        if (result.id === 'templates') {
+          setTemplates(result.value as MessageTemplateSummary[]);
+        }
+        if (result.id === 'events') setEvents(result.value as EventRow[]);
+        if (result.id === 'runs') setRuns(result.value as RunRow[]);
+        if (result.id === 'queue') setQueue(result.value as QueueSnapshot);
+        if (result.id === 'interactions') {
+          setInteractions(result.value as UserInteraction[]);
+        }
       }
-      if (result.id === 'health') setHealth(result.value as Health);
-      if (result.id === 'config') setConfig(result.value as AppConfig);
-      if (result.id === 'raw' && result.value !== null) {
-        setRaw(result.value as RawConfig);
-      }
-      if (result.id === 'templates')
-        setTemplates(result.value as MessageTemplateSummary[]);
-      if (result.id === 'events') setEvents(result.value as EventRow[]);
-      if (result.id === 'runs') setRuns(result.value as RunRow[]);
-      if (result.id === 'queue') setQueue(result.value as QueueSnapshot);
-      if (result.id === 'interactions')
-        setInteractions(result.value as UserInteraction[]);
-    }
 
-    if (failures.length === 0) {
-      setStatus(t('status.updated'));
-    } else if (failures.some(failure => failure.id === 'health')) {
-      setStatus(t('status.backendOffline'));
-    } else if (failures.some(failure => failure.kind === 'auth')) {
-      setStatus(t('status.authorizationRequired'));
-    } else {
-      setStatus(t('status.partialFailure'));
-    }
-  }, [t, token]);
+      if (nextFailures.length === 0) {
+        setStatus(t('status.updated'));
+      } else if (nextFailures.some(failure => failure.id === 'health')) {
+        setStatus(t('status.backendOffline'));
+      } else if (nextFailures.some(failure => failure.kind === 'auth')) {
+        setStatus(t('status.authorizationRequired'));
+      } else {
+        setStatus(t('status.partialFailure'));
+      }
+    },
+    [t, token],
+  );
+
+  const refresh = React.useCallback(
+    async (mode: RefreshMode = 'full', waitForTurn = true) => {
+      if (!waitForTurn && refreshInFlight.current) return;
+      while (refreshInFlight.current) {
+        try {
+          await refreshInFlight.current;
+        } catch {
+          // A requested full refresh still gets its own turn after a failure.
+        }
+        if (!waitForTurn) return;
+      }
+
+      const request = performRefresh(mode);
+      refreshInFlight.current = request;
+      try {
+        await request;
+      } finally {
+        if (refreshInFlight.current === request) {
+          refreshInFlight.current = null;
+        }
+      }
+    },
+    [performRefresh],
+  );
   const refreshRef = React.useRef(refresh);
 
   React.useEffect(() => {
@@ -615,19 +685,19 @@ function App() {
   function queueFollowupRefresh() {
     for (const delay of [500, 1500, 3000]) {
       window.setTimeout(() => {
-        void refreshRef.current();
+        void refreshRef.current('runtime', false);
       }, delay);
     }
   }
 
   React.useEffect(() => {
-    void refresh();
+    void refresh('full');
   }, [refresh]);
 
   React.useEffect(() => {
     const interval = window.setInterval(() => {
       if (document.visibilityState === 'visible') {
-        void refreshRef.current();
+        void refreshRef.current('runtime', false);
       }
     }, AUTO_REFRESH_INTERVAL_MS);
     return () => window.clearInterval(interval);
@@ -647,7 +717,6 @@ function App() {
   async function acceptConfigResponse(response: Response): Promise<AppConfig> {
     if (!response.ok) throw new Error(await responseFailureReason(response));
     const saved = (await response.json()) as AppConfig;
-    refreshRequestId.current += 1;
     setConfig(saved);
     return saved;
   }

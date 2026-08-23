@@ -184,6 +184,34 @@ test('keeps the read-only dashboard healthy without an admin token', async ({
   ).toBeVisible();
 });
 
+test('does not overlap slow polling or repeatedly load static resources', async ({
+  page,
+}) => {
+  const requestCounts = {config: 0, raw: 0, templates: 0, events: 0};
+  page.on('request', request => {
+    const pathname = new URL(request.url()).pathname;
+    if (pathname === '/api/config') requestCounts.config += 1;
+    if (pathname === '/api/config/raw') requestCounts.raw += 1;
+    if (pathname === '/api/templates') requestCounts.templates += 1;
+    if (pathname === '/api/events') requestCounts.events += 1;
+  });
+  await page.route(/\/api\/events\?limit=80$/u, async route => {
+    await new Promise(resolve => setTimeout(resolve, 6200));
+    await route.fulfill({json: []});
+  });
+  await page.addInitScript(
+    token => sessionStorage.setItem('las-token', token),
+    testTokens.admin,
+  );
+
+  await page.goto(`${baseUrl}/ui/`);
+  await expect(page.getByRole('main').getByText('本地后端在线')).toBeVisible({
+    timeout: 9000,
+  });
+
+  expect(requestCounts).toEqual({config: 1, raw: 1, templates: 1, events: 1});
+});
+
 test('adapts node tests and supports quick connection removal', async ({
   page,
 }) => {

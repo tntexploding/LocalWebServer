@@ -2,7 +2,11 @@ import {readFile, readdir} from 'node:fs/promises';
 import {randomUUID} from 'node:crypto';
 import path from 'node:path';
 import {isIP} from 'node:net';
-import {Ajv2020, type ErrorObject} from 'ajv/dist/2020.js';
+import {
+  Ajv2020,
+  type ErrorObject,
+  type ValidateFunction,
+} from 'ajv/dist/2020.js';
 import {
   firstJsonPathValue,
   messageTemplateSchema,
@@ -44,10 +48,21 @@ export interface MessageTemplateDecodeResult {
   error?: string;
 }
 
+interface LoadedMessageTemplate {
+  content: string;
+  template: MessageTemplate;
+  validate: ValidateFunction;
+}
+
 /** Loads v2 templates and validates, decodes, or materializes messages. */
 export class MessageTemplateDecoder {
   private readonly ajv = createTemplateAjv();
   private readonly templatesDir: string;
+  private readonly cache = new Map<string, LoadedMessageTemplate>();
+  private readonly pendingLoads = new Map<
+    string,
+    Promise<LoadedMessageTemplate>
+  >();
 
   constructor(rootDir: string) {
     this.templatesDir = path.join(rootDir, 'config', 'templates');
@@ -64,9 +79,10 @@ export class MessageTemplateDecoder {
     const names = entries
       .filter(name => name.endsWith('.json'))
       .sort((a, b) => a.localeCompare(b));
+    this.pruneCache(new Set(names));
     return Promise.all(
       names.map(async name => {
-        const template = await this.load(name);
+        const {template} = await this.load(name);
         return {
           name,
           id: template.id,
@@ -90,11 +106,10 @@ export class MessageTemplateDecoder {
     body: unknown,
   ): Promise<MessageTemplateDecodeResult> {
     try {
-      const template = await this.load(name);
+      const {template, validate} = await this.load(name);
       if (!template.capabilities.receive) {
         throw new Error(`Message template does not support receiving: ${name}`);
       }
-      const validate = this.ajv.compile(template.schema);
       if (!validate(body)) {
         return {
           template: name,
@@ -151,7 +166,7 @@ export class MessageTemplateDecoder {
     values: Record<string, unknown> = {},
     includedPaths?: string[],
   ): Promise<unknown> {
-    const template = await this.load(name);
+    const {template, validate} = await this.load(name);
     if (!template.capabilities.send) {
       throw new Error(`Message template does not support sending: ${name}`);
     }
@@ -205,7 +220,6 @@ export class MessageTemplateDecoder {
         throw new Error(requirement.message);
       }
     }
-    const validate = this.ajv.compile(template.schema);
     if (!validate(result)) {
       const details = simplifyErrors(validate.errors)
         .map(error => `${error.path}: ${error.message}`)
@@ -217,20 +231,61 @@ export class MessageTemplateDecoder {
     return result;
   }
 
-  private async load(name: string): Promise<MessageTemplate> {
+  private async load(name: string): Promise<LoadedMessageTemplate> {
     if (path.basename(name) !== name || !name.endsWith('.json')) {
       throw new Error(`Invalid message template name: ${name}`);
     }
-    const content = await readFile(path.join(this.templatesDir, name), 'utf8');
+
+    const pending = this.pendingLoads.get(name);
+    if (pending) return pending;
+
+    const load = this.readAndCompile(name);
+    this.pendingLoads.set(name, load);
+    try {
+      return await load;
+    } finally {
+      if (this.pendingLoads.get(name) === load) {
+        this.pendingLoads.delete(name);
+      }
+    }
+  }
+
+  private async readAndCompile(name: string): Promise<LoadedMessageTemplate> {
+    let content: string;
+    try {
+      content = await readFile(path.join(this.templatesDir, name), 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        this.releaseCached(name);
+      }
+      throw error;
+    }
+
+    const cached = this.cache.get(name);
+    if (cached?.content === content) return cached;
+
     const template = messageTemplateSchema.parse(
       JSON.parse(content),
     ) as MessageTemplate;
-    this.assertDefinition(name, template);
-    return template;
+    this.releaseCached(name);
+    let validate: ValidateFunction;
+    try {
+      validate = this.ajv.compile(template.schema);
+      this.assertDefinition(name, template, validate);
+    } catch (error) {
+      this.ajv.removeSchema(template.schema);
+      throw error;
+    }
+    const loaded = {content, template, validate};
+    this.cache.set(name, loaded);
+    return loaded;
   }
 
-  private assertDefinition(name: string, template: MessageTemplate): void {
-    const validate = this.ajv.compile(template.schema);
+  private assertDefinition(
+    name: string,
+    template: MessageTemplate,
+    validate: ValidateFunction,
+  ): void {
     for (const field of template.fields) {
       if (field.defaultValue !== undefined)
         assertTemplateFieldValue(field, field.defaultValue);
@@ -259,6 +314,19 @@ export class MessageTemplateDecoder {
         `Match-capable template has no matchable fields: ${name}`,
       );
     }
+  }
+
+  private pruneCache(names: Set<string>): void {
+    for (const name of this.cache.keys()) {
+      if (!names.has(name)) this.releaseCached(name);
+    }
+  }
+
+  private releaseCached(name: string): void {
+    const cached = this.cache.get(name);
+    if (!cached) return;
+    this.ajv.removeSchema(cached.template.schema);
+    this.cache.delete(name);
   }
 }
 

@@ -83,6 +83,59 @@ test('decodes media variants and prefers meaningful alternate paths', async t =>
   assert.deepEqual(legacy.displayItems, []);
 });
 
+test('compiles unchanged templates once across concurrent callers', async t => {
+  const root = await createTemplateRoot(mediaTemplate());
+  t.after(() => rm(root, {recursive: true, force: true}));
+  const decoder = new MessageTemplateDecoder(root);
+  const originalCompile = decoder.ajv.compile.bind(decoder.ajv);
+  let compileCount = 0;
+  decoder.ajv.compile = schema => {
+    compileCount += 1;
+    return originalCompile(schema);
+  };
+
+  await Promise.all([
+    ...Array.from({length: 20}, () => decoder.list()),
+    ...Array.from({length: 20}, () =>
+      decoder.decode('media.json', {content: {}}),
+    ),
+  ]);
+  await decoder.list();
+  await decoder.decode('media.json', {content: {}});
+
+  assert.equal(compileCount, 1);
+  assert.equal(decoder.cache.size, 1);
+  assert.equal(decoder.pendingLoads.size, 0);
+});
+
+test('reloads changed templates and releases deleted entries', async t => {
+  const root = await createTemplateRoot(mediaTemplate());
+  t.after(() => rm(root, {recursive: true, force: true}));
+  const decoder = new MessageTemplateDecoder(root);
+  const originalCompile = decoder.ajv.compile.bind(decoder.ajv);
+  let compileCount = 0;
+  decoder.ajv.compile = schema => {
+    compileCount += 1;
+    return originalCompile(schema);
+  };
+
+  assert.equal((await decoder.list())[0].displayName, 'Test media');
+  const changed = mediaTemplate();
+  changed.name = 'Changed media';
+  await writeFile(
+    path.join(root, 'config', 'templates', 'media.json'),
+    `${JSON.stringify(changed, null, 2)}\n`,
+    'utf8',
+  );
+
+  assert.equal((await decoder.list())[0].displayName, 'Changed media');
+  assert.equal(compileCount, 2);
+
+  await rm(path.join(root, 'config', 'templates', 'media.json'));
+  assert.deepEqual(await decoder.list(), []);
+  assert.equal(decoder.cache.size, 0);
+});
+
 async function createTemplateRoot(template) {
   const root = await mkdtemp(path.join(tmpdir(), 'las-template-'));
   const directory = path.join(root, 'config', 'templates');
